@@ -581,5 +581,9 @@ int main(int argc, char** argv) {
 }
 
 #ifdef _WIN32
+#ifndef VSTTARGET
 #include "winMain.cpp"
+#else
+#include "vstMain.cpp"
+#endif
 #endif

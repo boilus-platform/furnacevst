@@ -18,51 +18,31 @@
  */
 
 #include "taAudio.h"
-#ifdef HAVE_RTMIDI
-#include "rtmidi.h"
-#endif
-#ifdef VSTTARGET
-#include "vstmidi.h"
-#endif 
 
-bool TAAudio::initMidi(bool jack) {
-#ifndef HAVE_RTMIDI
-  return false;
-#else
-#ifndef VSTTARGET
-  midiIn=new TAMidiInRtMidi;
-#else
-  midiIn=new TAMidiInVstMidi;
-#endif
-  midiOut=new TAMidiOutRtMidi;
+class TAMidiInVstMidi : public TAMidiIn {
+    bool isOpen;
+public:
+    bool gather();
+    bool isDeviceOpen();
+    bool openDevice(String name);
+    bool closeDevice();
+    std::vector<String> listDevices();
+    bool quit();
+    bool init();
+    TAMidiInVstMidi() :
+        isOpen(false) {}
+};
 
-  if (!midiIn->init()) {
-    delete midiIn;
-    midiIn=NULL;
-    return false;
-  }
-
-  if (!midiOut->init()) {
-    midiIn->quit();
-    delete midiOut;
-    delete midiIn;
-    midiOut=NULL;
-    midiIn=NULL;
-    return false;
-  }
-  return true;
-#endif
-}
-
-void TAAudio::quitMidi() {
-  if (midiIn!=NULL) {
-    midiIn->quit();
-    delete midiIn;
-    midiIn=NULL;
-  }
-  if (midiOut!=NULL) {
-    midiOut->quit();
-    delete midiOut;
-    midiOut=NULL;
-  }
-}
+class TAMidiOutVstMidi : public TAMidiOut {
+    bool isOpen;
+public:
+    bool send(const TAMidiMessage& what);
+    bool isDeviceOpen();
+    bool openDevice(String name);
+    bool closeDevice();
+    std::vector<String> listDevices();
+    bool quit();
+    bool init();
+    TAMidiOutVstMidi() :
+        isOpen(false) {}
+};

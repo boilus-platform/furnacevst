@@ -1,0 +1,5 @@
+LIBRARY furnace
+EXPORTS
+	DllMain @1
+	VSTPluginMain @2
+	MAIN @3

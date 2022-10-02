@@ -37,6 +37,9 @@
 #ifdef HAVE_SNDFILE
 #include "sfWrapper.h"
 #endif
+#ifdef VSTTARGET
+#include "../audio/vstAudio.h"
+#endif
 #include <fmt/printf.h>
 
 void process(void* u, float** in, float** out, int inChans, int outChans, unsigned int size) {
@@ -3691,11 +3694,19 @@ bool DivEngine::initAudioBackend() {
       audioEngine=DIV_AUDIO_SDL;
     }
   }
+  
+#ifdef VSTTARGET
+  audioEngine=DIV_AUDIO_VST; 
+#endif
 
   lowQuality=getConfInt("audioQuality",0);
   forceMono=getConfInt("forceMono",0);
   clampSamples=getConfInt("clampSamples",0);
   lowLatency=getConfInt("lowLatency",0);
+  
+#ifdef VSTTARGET
+  lowLatency = 1;
+#endif
   metroVol=(float)(getConfInt("metroVol",100))/100.0f;
   midiOutClock=getConfInt("midiOutClock",0);
   midiOutMode=getConfInt("midiOutMode",DIV_MIDI_MODE_NOTE);
@@ -3728,6 +3739,12 @@ bool DivEngine::initAudioBackend() {
       output=new TAAudio;
 #endif
       break;
+	case DIV_AUDIO_VST:
+#ifdef VSTTARGET
+      setConf("audioEngine", "VST");
+	  output=new TAAudioVST;
+	  break;
+#endif
     case DIV_AUDIO_DUMMY:
       output=new TAAudio;
       break;
@@ -3895,9 +3912,14 @@ bool DivEngine::init() {
   reset();
   active=true;
 
+#ifdef VSTTARGET
+  SetAudioHookReallyReady();
+#endif
+
   if (!haveAudio) {
     return false;
   } else {
+
     if (!output->setRun(true)) {
       logE("error while activating!");
       return false;

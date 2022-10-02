@@ -18,51 +18,19 @@
  */
 
 #include "taAudio.h"
-#ifdef HAVE_RTMIDI
-#include "rtmidi.h"
-#endif
-#ifdef VSTTARGET
-#include "vstmidi.h"
-#endif 
+#include "../vst/pluginhook.h"
 
-bool TAAudio::initMidi(bool jack) {
-#ifndef HAVE_RTMIDI
-  return false;
-#else
-#ifndef VSTTARGET
-  midiIn=new TAMidiInRtMidi;
-#else
-  midiIn=new TAMidiInVstMidi;
-#endif
-  midiOut=new TAMidiOutRtMidi;
+class TAAudioVST: public TAAudio {
+  bool audioSysStarted;
 
-  if (!midiIn->init()) {
-    delete midiIn;
-    midiIn=NULL;
-    return false;
-  }
+  public:
+    void onProcess(float** buf, int nframes);
 
-  if (!midiOut->init()) {
-    midiIn->quit();
-    delete midiOut;
-    delete midiIn;
-    midiOut=NULL;
-    midiIn=NULL;
-    return false;
-  }
-  return true;
-#endif
-}
-
-void TAAudio::quitMidi() {
-  if (midiIn!=NULL) {
-    midiIn->quit();
-    delete midiIn;
-    midiIn=NULL;
-  }
-  if (midiOut!=NULL) {
-    midiOut->quit();
-    delete midiOut;
-    midiOut=NULL;
-  }
-}
+    void* getContext();
+    bool quit();
+    bool setRun(bool run);
+    std::vector<String> listAudioDevices();
+    bool init(TAAudioDesc& request, TAAudioDesc& response);
+    TAAudioVST():
+      audioSysStarted(false) {}
+};
