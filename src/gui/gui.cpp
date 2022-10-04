@@ -70,6 +70,10 @@ extern "C" {
 
 #include "actionUtil.h"
 
+#ifdef VSTTARGET
+#include "../vst/pluginhook.h"
+#endif
+
 bool Particle::update(float frameTime) {
   pos.x+=speed.x*frameTime;
   pos.y+=speed.y*frameTime;
@@ -3054,12 +3058,16 @@ bool FurnaceGUI::loop() {
           }
           break;
         case SDL_QUIT:
+#ifndef VSTTARGET
           if (modified) {
             showWarning("Unsaved changes! Save changes before quitting?",GUI_WARN_QUIT);
           } else {
             quit=true;
             return true;
           }
+#else
+            SDL_HideWindow(sdlWin);
+#endif
           break;
       }
     }
@@ -4999,8 +5007,12 @@ bool FurnaceGUI::init() {
     scrY=scrConfY=SDL_WINDOWPOS_CENTERED;
   }
 #endif
-
-  sdlWin=SDL_CreateWindow("Furnace",scrX,scrY,scrW*dpiScale,scrH*dpiScale,SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI|(scrMax?SDL_WINDOW_MAXIMIZED:0)|(fullScreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0));
+  int addFlags = 0;
+#ifdef VSTTARGET
+  addFlags = SDL_WINDOW_HIDDEN;
+#endif
+  sdlWin=SDL_CreateWindow("Furnace",scrX,scrY,scrW*dpiScale,scrH*dpiScale,SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI|(scrMax?SDL_WINDOW_MAXIMIZED:0)|(fullScreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0) | addFlags);
+  HandOverSDLWindow(sdlWin);
   if (sdlWin==NULL) {
     logE("could not open window! %s",SDL_GetError());
     return false;
