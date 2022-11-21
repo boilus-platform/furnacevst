@@ -522,12 +522,13 @@ src/engine/platform/dummy.cpp
 )
 
 if (AS_VST)
-  list(APPEND ENGINE_SOURCES src/vst/audioeffect.cpp)
-  list(APPEND ENGINE_SOURCES src/vst/audioeffectx.cpp)
+  list(APPEND ENGINE_SOURCES extern/vst/audioeffect.cpp)
+  list(APPEND ENGINE_SOURCES extern/vst/audioeffectx.cpp)
   list(APPEND ENGINE_SOURCES src/vst/plugin.cpp)
   list(APPEND ENGINE_SOURCES src/audio/vstmidi.cpp)
   list(APPEND ENGINE_SOURCES src/audio/vstAudio.cpp)
   list(APPEND ENGINE_SOURCES src/furnace.def)
+  list(APPEND DEPENDENCIES_INCLUDE_DIRS extern/vst)
   list(APPEND DEPENDENCIES_DEFINES VSTTARGET)
 endif()
 

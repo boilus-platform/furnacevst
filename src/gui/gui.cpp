@@ -2946,6 +2946,7 @@ bool FurnaceGUI::loop() {
     logD("key input: main thread");
   }
 
+
   while (!quit) {
     SDL_Event ev;
     if (e->isPlaying()) {
@@ -3264,6 +3265,15 @@ bool FurnaceGUI::loop() {
     curWindow=GUI_WINDOW_NOTHING;
     editOptsVisible=false;
 
+    if (!firstFrame && isNewProject()) {
+        showWarning("Do you want to enable Project Sync?", GUI_WARN_PROJECT_SYNC);
+    }
+
+    if (projectSyncEnabled() && !isBlobLoaded()) {
+        Blob b = getBlob();
+        if (b.size > 0)
+            e->load(b.blob, b.size);
+    }
     if (!mobileUI) {
       ImGui::BeginMainMenuBar();
       if (ImGui::BeginMenu("file")) {
@@ -3493,11 +3503,7 @@ bool FurnaceGUI::loop() {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("exit")) {
-          if (modified) {
-            showWarning("Unsaved changes! Save before quitting?",GUI_WARN_QUIT);
-          } else {
-            quit=true;
-          }
+            showWarning("please stop", GUI_WARN_GENERIC);
         }
         ImGui::EndMenu();
       }
@@ -4326,7 +4332,7 @@ bool FurnaceGUI::loop() {
       }
       ImGui::EndPopup();
     }
-
+    
     if (ImGui::BeginPopupModal("Warning",NULL,ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::Text("%s",warnString.c_str());
       switch (warnAction) {
@@ -4638,6 +4644,17 @@ bool FurnaceGUI::loop() {
             ImGui::CloseCurrentPopup();
           }
           break;
+        case GUI_WARN_PROJECT_SYNC:
+          if (ImGui::Button("Yes")) {
+              setProjectSync(true);
+              ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("No")) {
+              setProjectSync(false);
+              ImGui::CloseCurrentPopup();
+          }
+          break;
         case GUI_WARN_GENERIC:
           if (ImGui::Button("OK")) {
             ImGui::CloseCurrentPopup();
@@ -4790,6 +4807,7 @@ bool FurnaceGUI::loop() {
             SafeWriter* w=e->saveFur(true);
 
             if (w!=NULL) {
+#ifndef VSTTARGET
               FILE* outFile=ps_fopen(backupPath.c_str(),"wb");
               if (outFile!=NULL) {
                 if (fwrite(w->getFinalBuf(),1,w->size(),outFile)!=w->size()) {
@@ -4801,8 +4819,13 @@ bool FurnaceGUI::loop() {
                 logW("could not save backup: %s!",strerror(errno));
                 w->finish();
               }
+#else
+                saveFurnaceBlob(w->getFinalBuf(), w->size());
+#endif
             }
-            backupTimer=30.0;
+#ifdef VSTTARGET
+            backupTimer=1.0;
+#endif
             return true;
           });
         }
@@ -5318,7 +5341,11 @@ FurnaceGUI::FurnaceGUI():
   aboutScroll(0),
   aboutSin(0),
   aboutHue(0.0f),
+#ifdef VSTTARGET
+  backupTimer(1.0),
+#else
   backupTimer(15.0),
+#endif
   learning(-1),
   mainFont(NULL),
   iconFont(NULL),

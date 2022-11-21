@@ -41,11 +41,30 @@ enum {
 	kNumParams
 };
 
-struct VoiceHandler {
-	int key = 0;
-	int active = false;
-	int samples = 0;
-	int velocity = 0;
+struct furnacedata {
+	furnacedata() {
+		data.resize(2 * sizeof(float));
+		*getParaInBlob(0) = 0.0f;
+		*getParaInBlob(1) = 0.0f;
+	}
+
+	float* getParaInBlob(int index) {
+		return ((float*)data.data()) + index;
+	}
+
+	size_t getFurnaceBlobSize() {
+		return data.size() - 2 * sizeof(float);
+	}
+
+	unsigned char* getFurnaceBlobPtr() {
+		return data.data() + 2 * sizeof(float);
+	}
+
+	void saveFurnaceBlob(void* ptr, size_t size) {
+		data.resize(2 * sizeof(float) + size);
+		memcpy(getFurnaceBlobPtr(), ptr, size);
+	}
+	std::vector<unsigned char> data;
 };
 
 struct ADevice {
@@ -60,11 +79,48 @@ struct ADevice {
 	AudioEffectX* hack = NULL;
 	double time = 0.0f;
 	SDL_Window* w = NULL;
+	int n_inst = 0;
+	bool newproj = true;
+	int ins_num = -1;
+	bool psync = false;
+	bool blobloaded = false;
+	furnacedata chunk;
 };
 
-
-
 ADevice global;
+
+void saveFurnaceBlob(void* ptr, size_t size) {
+	global.chunk.saveFurnaceBlob(ptr, size);
+}
+
+bool projectSyncEnabled() {
+	return global.psync;
+}
+
+bool isBlobLoaded() {
+	int val = global.blobloaded;
+	global.blobloaded = true;
+	return val;
+}
+
+Blob getBlob() {
+	Blob b;
+	b.blob = new unsigned char[global.chunk.getFurnaceBlobSize()];
+	b.size = global.chunk.getFurnaceBlobSize();
+	memcpy(b.blob, global.chunk.getFurnaceBlobPtr(), global.chunk.getFurnaceBlobSize());
+	return b;
+}
+
+bool isNewProject() {
+	bool cval = global.newproj;
+	global.newproj = false;
+	return cval;
+}
+
+void setProjectSync(bool val) {
+	global.hack->setParameterAutomated(0, val ? 1.0f : 0.0f);
+}
+
 
 void HandOverSDLWindow(SDL_Window* w) {
 	global.w = w;
@@ -120,10 +176,10 @@ void HideItPleaseGod(HWND tohide) {
 	}
 }
 
-class MatrixSynth : public AudioEffectX {
+class FurnaceVST : public AudioEffectX {
 public:
-	MatrixSynth(audioMasterCallback audioMaster) :
-		AudioEffectX(audioMaster, 0, 2) {
+	FurnaceVST(audioMasterCallback audioMaster) :
+		AudioEffectX(audioMaster, 1, 2) {
 		this->getAeffect()->flags |= effFlagsHasEditor;
 		if (audioMaster) {
 			setNumInputs(0);
@@ -133,6 +189,7 @@ public:
 			//setEditor(&e);
 			setUniqueID('frnc');
 			noTail(false);
+			programsAreChunks();
 		}
 		
 		suspend();
@@ -140,16 +197,20 @@ public:
 		global.hack = this;
 	}
 
+	void getProgramName(char* name) {
+		strcpy(name, "default");
+	}
+
 	void getParameterDisplay(VstInt32 index, char* text) {
 		switch (index) {
 		case 0:
-			if (psync)
-				memcpy(text, "True", 5);
+			if (global.psync)
+				memcpy(text, "On", 3);
 			else
-				memcpy(text, "False", 6);
+				memcpy(text, "Off", 4);
 			break;
 		case 1:
-			std::string val = std::to_string(ins_num).c_str();
+			std::string val = std::to_string(global.ins_num).c_str();
 			memcpy(text, val.c_str(), val.size());
 			break;
 		}
@@ -161,15 +222,31 @@ public:
 		return true;
 	}
 
-	float getParameter(VstInt32 index, float value) {
+	float getParameter(VstInt32 index) {
 		switch (index) {
 		case 0:
-			return psync ? 1.0f : 0.0f;
+			return global.psync ? 1.0f : 0.0f;
 		case 1:
-			if (ins_num > 0)
-				return ins_num;
+			if (global.ins_num > 0)
+				return global.ins_num;
 			else
 				return 0;
+		}
+	}
+
+	void setParameter(VstInt32 index, float value) {
+		switch (index) {
+		case 0:
+			global.newproj = false;
+			if (value > 0.5f)
+				global.psync = true;
+			else
+				global.psync = false;
+			break;
+		case 1:
+			float eps = 0.0001f;
+			global.ins_num = fmin((int)roundf(1.0f / ((1.0f-value)+eps)), global.n_inst) - 1;
+			break;
 		}
 	}
 
@@ -221,23 +298,21 @@ public:
 		}
 	}
 
-	VoiceHandler* FindFirstVoiceAvailable(VstInt32 note) {
-		for (VoiceHandler& v : voices)
-			if (v.key == note)
-				return &v;
-		for (VoiceHandler& v : voices)
-			if (!v.active)
-				return &v;
-		return nullptr;
+	VstInt32 getChunk(void** data, bool isPreset) {
+		*global.chunk.getParaInBlob(0) = getParameter(0);
+		*global.chunk.getParaInBlob(1) = getParameter(1);
+		*data = global.chunk.data.data();
+		return global.chunk.data.size();
 	}
 
-	void noteOn(VstInt32 note, VstInt32 velocity, VstInt32 delta) {
-		VoiceHandler* v = FindFirstVoiceAvailable(note);
-		if (!v)
-			return;
-		v->key = note;
-		v->active = true;
-		v->velocity = velocity;
+	VstInt32 setChunk(void* data, VstInt32 byteSize, bool isPreset) {
+		if (byteSize > 7) {
+			global.chunk.data.resize(byteSize);
+			memcpy(global.chunk.data.data(), data, byteSize);
+			setParameter(0, *global.chunk.getParaInBlob(0));
+			setParameter(1, *global.chunk.getParaInBlob(1));
+		}
+		return 0;
 	}
 
 	VstInt32 processEvents(VstEvents* ev) {
@@ -254,18 +329,9 @@ public:
 		return 1;
 	}
 
-	void noteOff(VstInt32 note) {
-		VoiceHandler* v = FindFirstVoiceAvailable(note);
-		v->active = false;
-		v->samples = 0;
-	}
-
 private:
-	int ins_num = -1;
-	bool psync = false;
 	int hide = 0;
 	HWND host_win = 0;
-	VoiceHandler voices[32];
 	const float components[10] = {
 		0.55f, 0.45f, 0.375f, 0.3f, 
 		0.0f, 0.18f, 0.00f, 0.0f, 
@@ -278,7 +344,7 @@ private:
 
 AudioEffect* createEffectInstance(audioMasterCallback audioMaster)
 {
-	return new MatrixSynth(audioMaster);
+	return new FurnaceVST(audioMaster);
 }
 
 

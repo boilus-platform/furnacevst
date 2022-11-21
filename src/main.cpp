@@ -558,6 +558,7 @@ int main(int argc, char** argv) {
     g.showError("error while initializing audio!");
   }
 
+
   if (!fileName.empty()) {
     g.setFileName(fileName);
   }

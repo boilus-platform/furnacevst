@@ -31,7 +31,7 @@
 // © 2006, Steinberg Media Technologies, All Rights Reserved
 //-------------------------------------------------------------------------------------------------------
 
-#include "vst/audioeffect.h"
+#include "audioeffect.h"
 
 //------------------------------------------------------------------------
 /** Must be implemented externally. */
