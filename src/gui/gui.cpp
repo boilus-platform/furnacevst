@@ -5149,7 +5149,8 @@ bool FurnaceGUI::loop() {
             logD("backup saved.");
             backupTimer=30.0;
 #ifdef VSTTARGET
-            backupTimer=1.0;#endif
+            backupTimer=1.0;
+#endif
             return true;
           });
         }
