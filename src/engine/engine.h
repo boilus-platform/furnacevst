@@ -47,8 +47,8 @@
 #define BUSY_BEGIN_SOFT softLocked=true; isBusy.lock();
 #define BUSY_END isBusy.unlock(); softLocked=false;
 
-#define DIV_VERSION "dev119"
-#define DIV_ENGINE_VERSION 119
+#define DIV_VERSION "0.6pre3"
+#define DIV_ENGINE_VERSION 133
 // for imports
 #define DIV_VERSION_MOD 0xff01
 #define DIV_VERSION_FC 0xff02
@@ -319,7 +319,7 @@ enum DivChanTypes {
 extern const char* cmdName[];
 
 class DivEngine {
-  DivDispatchContainer disCont[32];
+  DivDispatchContainer disCont[DIV_MAX_CHIPS];
   TAAudio* output;
   TAAudioDesc want, got;
   String exportPath;
@@ -329,7 +329,7 @@ class DivEngine {
   bool lowQuality;
   bool playing;
   bool freelance;
-  bool shallStop;
+  bool shallStop, shallStopSched;
   bool speedAB;
   bool endOfSong;
   bool consoleMode;
@@ -352,14 +352,14 @@ class DivEngine {
   bool midiOutClock;
   int midiOutMode;
   int softLockCount;
-  int subticks, ticks, curRow, curOrder, prevRow, prevOrder, remainingLoops, totalLoops, lastLoopPos, exportLoopCount, nextSpeed;
+  int subticks, ticks, curRow, curOrder, prevRow, prevOrder, remainingLoops, totalLoops, lastLoopPos, exportLoopCount, nextSpeed, elapsedBars, elapsedBeats;
   size_t curSubSongIndex;
   double divider;
   int cycles;
   double clockDrift;
   int stepPlay;
   int changeOrd, changePos, totalSeconds, totalTicks, totalTicksR, totalCmds, lastCmds, cmdsPerSecond, globalPitch;
-  unsigned char extValue;
+  unsigned char extValue, pendingMetroTick;
   unsigned char speed1, speed2;
   short tempoAccum;
   DivStatusView view;
@@ -383,9 +383,9 @@ class DivEngine {
   std::vector<String> midiOuts;
   std::vector<DivCommand> cmdStream;
   std::vector<DivInstrumentType> possibleInsTypes;
-  DivSysDef* sysDefs[256];
-  DivSystem sysFileMapFur[256];
-  DivSystem sysFileMapDMF[256];
+  static DivSysDef* sysDefs[256];
+  static DivSystem sysFileMapFur[256];
+  static DivSystem sysFileMapDMF[256];
 
   struct SamplePreview {
     double rate;
@@ -432,7 +432,7 @@ class DivEngine {
   void processRow(int i, bool afterDelay);
   void nextOrder();
   void nextRow();
-  void performVGMWrite(SafeWriter* w, DivSystem sys, DivRegWrite& write, int streamOff, double* loopTimer, double* loopFreq, int* loopSample, bool* sampleDir, bool isSecond);
+  void performVGMWrite(SafeWriter* w, DivSystem sys, DivRegWrite& write, int streamOff, double* loopTimer, double* loopFreq, int* loopSample, bool* sampleDir, bool isSecond, bool directStream);
   // returns true if end of song.
   bool nextTick(bool noAccum=false, bool inhibitLowLat=false);
   bool perSystemEffect(int ch, unsigned char effect, unsigned char effectVal);
@@ -440,8 +440,6 @@ class DivEngine {
   void recalcChans();
   void reset();
   void playSub(bool preserveDrift, int goalRow=0);
-
-  void convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivSystem sys);
 
   bool loadDMF(unsigned char* file, size_t len);
   bool loadFur(unsigned char* file, size_t len);
@@ -470,7 +468,7 @@ class DivEngine {
   bool deinitAudioBackend(bool dueToSwitchMaster=false);
 
   void registerSystems();
-  void initSongWithDesc(const char* description);
+  void initSongWithDesc(const char* description, bool inBase64=true);
 
   void exchangeIns(int one, int two);
   void swapChannels(int src, int dest);
@@ -504,7 +502,7 @@ class DivEngine {
     // parse old system setup description
     String decodeSysDesc(String desc);
     // start fresh
-    void createNew(const char* description, String sysName);
+    void createNew(const char* description, String sysName, bool inBase64=true);
     // load a file.
     bool load(unsigned char* f, size_t length);
     // save as .dmf.
@@ -516,7 +514,7 @@ class DivEngine {
     // specify system to build ROM for.
     SafeWriter* buildROM(int sys);
     // dump to VGM.
-    SafeWriter* saveVGM(bool* sysToExport=NULL, bool loop=true, int version=0x171, bool patternHints=false);
+    SafeWriter* saveVGM(bool* sysToExport=NULL, bool loop=true, int version=0x171, bool patternHints=false, bool directStream=false);
     // dump to ZSM.
     SafeWriter* saveZSM(unsigned int zsmrate=60, bool loop=true);
     // dump command stream.
@@ -533,10 +531,14 @@ class DivEngine {
     void notifyWaveChange(int wave);
 
     // get system IDs
-    DivSystem systemFromFileFur(unsigned char val);
-    unsigned char systemToFileFur(DivSystem val);
-    DivSystem systemFromFileDMF(unsigned char val);
-    unsigned char systemToFileDMF(DivSystem val);
+    static DivSystem systemFromFileFur(unsigned char val);
+    static unsigned char systemToFileFur(DivSystem val);
+    static DivSystem systemFromFileDMF(unsigned char val);
+    static unsigned char systemToFileDMF(DivSystem val);
+
+    // convert old flags
+    static void convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivSystem sys);
+
 
     // benchmark (returns time in seconds)
     double benchmarkPlayback();
@@ -576,7 +578,7 @@ class DivEngine {
     int calcBaseFreqFNumBlock(double clock, double divider, int note, int bits);
 
     // calculate frequency/period
-    int calcFreq(int base, int pitch, bool period=false, int octave=0, int pitch2=0, double clock=1.0, double divider=1.0, int blockBits=0);
+    int calcFreq(int base, int pitch, int arp, bool arpFixed, bool period=false, int octave=0, int pitch2=0, double clock=1.0, double divider=1.0, int blockBits=0);
 
     // calculate arpeggio
     int calcArp(int note, int arp, int offset=0);
@@ -616,6 +618,14 @@ class DivEngine {
     // trigger wave preview
     void previewWave(int wave, int note);
     void stopWavePreview();
+
+    // trigger sample preview
+    void previewSampleNoLock(int sample, int note=-1, int pStart=-1, int pEnd=-1);
+    void stopSamplePreviewNoLock();
+
+    // trigger wave preview
+    void previewWaveNoLock(int wave, int note);
+    void stopWavePreviewNoLock();
 
     // get config path
     String getConfigPath();
@@ -702,6 +712,10 @@ class DivEngine {
     // get current row
     int getRow();
 
+    // get beat/bar
+    int getElapsedBars();
+    int getElapsedBeats();
+
     // get current subsong
     size_t getCurrentSubSong();
 
@@ -746,14 +760,14 @@ class DivEngine {
     bool isExporting();
 
     // add instrument
-    int addInstrument(int refChan=0);
+    int addInstrument(int refChan=0, DivInstrumentType fallbackType=DIV_INS_STD);
 
     // add instrument from pointer
     int addInstrumentPtr(DivInstrument* which);
 
     // get instrument from file
     // if the returned vector is empty then there was an error.
-    std::vector<DivInstrument*> instrumentFromFile(const char* path);
+    std::vector<DivInstrument*> instrumentFromFile(const char* path, bool loadAssets=true);
 
     // load temporary instrument
     void loadTempIns(DivInstrument* which);
@@ -783,7 +797,7 @@ class DivEngine {
     DivSample* sampleFromFile(const char* path);
 
     // get raw sample
-    DivSample* sampleFromFileRaw(const char* path, DivSampleDepth depth, int channels, bool bigEndian, bool unsign);
+    DivSample* sampleFromFileRaw(const char* path, DivSampleDepth depth, int channels, bool bigEndian, bool unsign, bool swapNibbles);
 
     // delete sample
     void delSample(int index);
@@ -907,6 +921,9 @@ class DivEngine {
     // load sample ROMs
     int loadSampleROMs();
 
+    // get the sample format mask
+    unsigned int getSampleFormatMask();
+
     // UNSAFE render samples - only execute when locked
     void renderSamples();
 
@@ -956,8 +973,11 @@ class DivEngine {
     // get warnings
     String getWarnings();
 
+    // get debug info
+    String getPlaybackDebugInfo();
+
     // switch master
-    bool switchMaster();
+    bool switchMaster(bool full=false);
 
     // set MIDI base channel
     void setMidiBaseChan(int chan);
@@ -993,6 +1013,9 @@ class DivEngine {
     // quit dispatch
     void quitDispatch();
 
+    // pre-initialize the engine.
+    void preInit();
+
     // initialize the engine.
     bool init();
 
@@ -1012,6 +1035,7 @@ class DivEngine {
       playing(false),
       freelance(false),
       shallStop(false),
+      shallStopSched(false),
       speedAB(false),
       endOfSong(false),
       consoleMode(false),
@@ -1044,6 +1068,8 @@ class DivEngine {
       lastLoopPos(0),
       exportLoopCount(0),
       nextSpeed(3),
+      elapsedBars(0),
+      elapsedBeats(0),
       curSubSongIndex(0),
       divider(60),
       cycles(0),
@@ -1059,6 +1085,7 @@ class DivEngine {
       cmdsPerSecond(0),
       globalPitch(0),
       extValue(0),
+      pendingMetroTick(0),
       speed1(3),
       speed2(3),
       tempoAccum(0),

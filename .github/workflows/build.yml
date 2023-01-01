@@ -25,15 +25,15 @@ jobs:
           - { name: 'macOS x86_64', os: macos-latest, arch: x86_64 }
           - { name: 'macOS ARM', os: macos-latest, arch: arm64 }
           - { name: 'Linux x86_64', os: ubuntu-18.04, arch: x86_64 }
-          - { name: 'Linux ARM', os: ubuntu-18.04, arch: armhf }
-      fail-fast: false
+          #- { name: 'Linux ARM', os: ubuntu-18.04, arch: armhf }
+      fail-fast: true
 
     name: ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3.1.0
       with:
         submodules: recursive
 
@@ -59,9 +59,9 @@ jobs:
           echo "MinGW cross target: ${mingw_target}"
         fi
 
-        echo "::set-output name=vswhere-target::${vswhere_target}"
-        echo "::set-output name=msvc-target::${msvc_target}"
-        echo "::set-output name=mingw-target::${mingw_target}"
+        echo "vswhere-target=${vswhere_target}" >> $GITHUB_OUTPUT
+        echo "msvc-target=${msvc_target}" >> $GITHUB_OUTPUT
+        echo "mingw-target=${mingw_target}" >> $GITHUB_OUTPUT
 
     - name: Set package identifier
       id: package-identify
@@ -88,8 +88,8 @@ jobs:
         echo "Package identifier: ${package_name}"
         echo "Package file: ${package_name}${package_ext}"
 
-        echo "::set-output name=id::${package_name}"
-        echo "::set-output name=filename::${package_name}${package_ext}"
+        echo "id=${package_name}" >> $GITHUB_OUTPUT
+        echo "filename=${package_name}${package_ext}" >> $GITHUB_OUTPUT
 
     - name: Set build cores amount
       id: build-cores
@@ -102,11 +102,11 @@ jobs:
 
         echo "Amount of cores we can build with: ${amount}"
 
-        echo "::set-output name=amount::${amount}"
+        echo "amount=${amount}" >> $GITHUB_OUTPUT
 
     - name: Setup Toolchain [Windows MSVC]
       if: ${{ matrix.config.compiler == 'msvc' }}
-      uses: seanmiddleditch/gha-setup-vsdevenv@v3
+      uses: vadz/gha-setup-vsdevenv@avoid-deprecation-warnings
       with:
         arch: ${{ steps.windows-identify.outputs.vswhere-target }}
 
@@ -225,6 +225,9 @@ jobs:
           fi
         elif [ '${{ matrix.config.compiler }}' == 'mingw' ]; then
           CMAKE_EXTRA_ARGS+=('-DCMAKE_TOOLCHAIN_FILE=scripts/Cross-MinGW-${{ steps.windows-identify.outputs.mingw-target }}.cmake')
+          if [ '${{ matrix.config.arch }}' == 'x86' ]; then
+            CMAKE_EXTRA_ARGS+=('-DSUPPORT_XP=ON')
+          fi
         elif [ '${{ runner.os }}' == 'macOS' ]; then
           if [ '${{ matrix.config.arch }}' == 'arm64' ]; then
             CMAKE_EXTRA_ARGS+=('-DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"' '-DCMAKE_OSX_ARCHITECTURES=arm64')
@@ -275,6 +278,7 @@ jobs:
         cp -v ../LICENSE LICENSE.txt
         cp -v ../README.md README.txt
         cp -vr ../{papers,demos,instruments} ../${binPath}/furnace.exe ./
+        sha256sum ../${binPath}/furnace.exe > checksum.txt
 
         popd
 
@@ -314,7 +318,7 @@ jobs:
 
     - name: Upload artifact
       if: ${{ github.repository == 'tildearrow/furnace' && github.ref_name == 'master' }}
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v3.1.1
       with:
         name: ${{ steps.package-identify.outputs.id }}
         path: ${{ steps.package-identify.outputs.filename }}

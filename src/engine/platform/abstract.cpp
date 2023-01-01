@@ -22,6 +22,9 @@
 void DivDispatch::acquire(short* bufL, short* bufR, size_t start, size_t len) {
 }
 
+void DivDispatch::fillStream(std::vector<DivDelayedWrite>& stream, int sRate, size_t len) {
+}
+
 void DivDispatch::tick(bool sysTick) {
 }
 
@@ -94,6 +97,14 @@ bool DivDispatch::getWantPreNote() {
   return false;
 }
 
+int DivDispatch::getClockRangeMin() {
+  return MIN_CUSTOM_CLOCK;
+}
+
+int DivDispatch::getClockRangeMax() {
+  return MAX_CUSTOM_CLOCK;
+}
+
 void DivDispatch::setFlags(const DivConfig& flags) {
 }
 
@@ -149,11 +160,20 @@ size_t DivDispatch::getSampleMemCapacity(int index) {
   return 0;
 }
 
+const char* DivDispatch::getSampleMemName(int index) {
+  return NULL;
+}
+
 size_t DivDispatch::getSampleMemUsage(int index) {
   return 0;
 }
 
-void DivDispatch::renderSamples() {
+bool DivDispatch::isSampleLoaded(int index, int sample) {
+  printf("you are calling.\n");
+  return false;
+}
+
+void DivDispatch::renderSamples(int sysID) {
   
 }
 

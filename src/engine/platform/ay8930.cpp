@@ -243,7 +243,9 @@ void DivPlatformAY8930::tick(bool sysTick) {
         }
       }
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_PERIODIC(parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -320,7 +322,7 @@ void DivPlatformAY8930::tick(bool sysTick) {
       immWrite(0x1a,ayNoiseOr);
     }
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
       if (chan[i].dac.furnaceDAC) {
         double off=1.0;
         if (chan[i].dac.sample>=0 && chan[i].dac.sample<parent->song.sampleLen) {
@@ -403,7 +405,7 @@ int DivPlatformAY8930::dispatch(DivCommand c) {
       if (chan[c.chan].nextPSGMode.dac) {
         if (skipRegisterWrites) break;
         if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
-          chan[c.chan].dac.sample=ins->amiga.getSample(c.value);
+          if (c.value!=DIV_NOTE_NULL) chan[c.chan].dac.sample=ins->amiga.getSample(c.value);
           if (chan[c.chan].dac.sample<0 || chan[c.chan].dac.sample>=parent->song.sampleLen) {
             chan[c.chan].dac.sample=-1;
             if (dumpWrites) addWrite(0xffff0002+(c.chan<<8),0);
@@ -635,6 +637,12 @@ int DivPlatformAY8930::dispatch(DivCommand c) {
         sampleBank=parent->song.sample.size()/12;
       }
       break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
+      break;
     case DIV_ALWAYS_SET_VOLUME:
       return 0;
       break;
@@ -645,7 +653,7 @@ int DivPlatformAY8930::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_AY8930));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_PRE_NOTE:
@@ -804,6 +812,7 @@ void DivPlatformAY8930::setFlags(const DivConfig& flags) {
       chipClock=COLOR_NTSC/2.0;
       break;
   }
+  CHECK_CUSTOM_CLOCK;
   rate=chipClock/4;
   for (int i=0; i<3; i++) {
     oscBuf[i]->rate=rate;

@@ -174,6 +174,9 @@ void FurnaceGUI::doAction(int what) {
     case GUI_ACTION_PANIC:
       e->syncReset();
       break;
+    case GUI_ACTION_CLEAR:
+      showWarning("Are you sure you want to clear... (cannot be undone!)",GUI_WARN_CLEAR);
+      break;
 
     case GUI_ACTION_WINDOW_EDIT_CONTROLS:
       nextWindow=GUI_WINDOW_EDIT_CONTROLS;
@@ -522,7 +525,7 @@ void FurnaceGUI::doAction(int what) {
     case GUI_ACTION_PAT_INCREASE_COLUMNS:
       if (cursor.xCoarse<0 || cursor.xCoarse>=e->getTotalChannelCount()) break;
       e->curPat[cursor.xCoarse].effectCols++;
-              if (e->curPat[cursor.xCoarse].effectCols>8) e->curPat[cursor.xCoarse].effectCols=8;
+              if (e->curPat[cursor.xCoarse].effectCols>DIV_MAX_EFFECTS) e->curPat[cursor.xCoarse].effectCols=DIV_MAX_EFFECTS;
       break;
     case GUI_ACTION_PAT_DECREASE_COLUMNS:
       if (cursor.xCoarse<0 || cursor.xCoarse>=e->getTotalChannelCount()) break;
@@ -553,6 +556,10 @@ void FurnaceGUI::doAction(int what) {
     case GUI_ACTION_PAT_EXPAND_SONG: // TODO
       break;
     case GUI_ACTION_PAT_LATCH: // TODO
+      break;
+    case GUI_ACTION_PAT_SCROLL_MODE: // TODO
+      break;
+    case GUI_ACTION_PAT_CLEAR_LATCH: // TODO
       break;
 
     case GUI_ACTION_INS_LIST_ADD:
@@ -598,6 +605,9 @@ void FurnaceGUI::doAction(int what) {
       break;
     case GUI_ACTION_INS_LIST_SAVE:
       if (curIns>=0 && curIns<(int)e->song.ins.size()) openFileDialog(GUI_FILE_INS_SAVE);
+      break;
+    case GUI_ACTION_INS_LIST_SAVE_OLD:
+      if (curIns>=0 && curIns<(int)e->song.ins.size()) openFileDialog(GUI_FILE_INS_SAVE_OLD);
       break;
     case GUI_ACTION_INS_LIST_SAVE_DMP:
       if (curIns>=0 && curIns<(int)e->song.ins.size()) openFileDialog(GUI_FILE_INS_SAVE_DMP);
@@ -1291,14 +1301,56 @@ void FurnaceGUI::doAction(int what) {
       break;
     case GUI_ACTION_SAMPLE_MAKE_INS: {
       if (curSample<0 || curSample>=(int)e->song.sample.size()) break;
+      // determine instrument type
+      std::vector<DivInstrumentType> tempTypeList=e->getPossibleInsTypes();
+      makeInsTypeList.clear();
+
+      for (DivInstrumentType& i: tempTypeList) {
+        if (i==DIV_INS_PCE ||
+            i==DIV_INS_MSM6258 ||
+            i==DIV_INS_MSM6295 ||
+            i==DIV_INS_ADPCMA ||
+            i==DIV_INS_ADPCMB ||
+            i==DIV_INS_SEGAPCM ||
+            i==DIV_INS_QSOUND ||
+            i==DIV_INS_YMZ280B ||
+            i==DIV_INS_RF5C68 ||
+            i==DIV_INS_MULTIPCM ||
+            i==DIV_INS_MIKEY ||
+            i==DIV_INS_X1_010 ||
+            i==DIV_INS_SWAN ||
+            i==DIV_INS_AY ||
+            i==DIV_INS_AY8930 ||
+            i==DIV_INS_VRC6 ||
+            i==DIV_INS_SU ||
+            i==DIV_INS_SNES ||
+            i==DIV_INS_ES5506 ||
+            i==DIV_INS_K007232 ||
+            i==DIV_INS_GA20) {
+          makeInsTypeList.push_back(i);
+        }
+      }
+
+      if (makeInsTypeList.size()>1) {
+        displayInsTypeList=true;
+        displayInsTypeListMakeInsSample=curSample;
+        break;
+      }
+
+      DivInstrumentType insType=DIV_INS_AMIGA;
+      if (!makeInsTypeList.empty()) {
+        insType=makeInsTypeList[0];
+      }
+
       DivSample* sample=e->song.sample[curSample];
       curIns=e->addInstrument(cursor.xCoarse);
       if (curIns==-1) {
         showError("too many instruments!");
       } else {
-        e->song.ins[curIns]->type=DIV_INS_AMIGA;
+        e->song.ins[curIns]->type=insType;
         e->song.ins[curIns]->name=sample->name;
         e->song.ins[curIns]->amiga.initSample=curSample;
+        if (insType!=DIV_INS_AMIGA) e->song.ins[curIns]->amiga.useSample=true;
         nextWindow=GUI_WINDOW_INS_EDIT;
         MARK_MODIFIED;
         wavePreviewInit=true;
@@ -1340,7 +1392,7 @@ void FurnaceGUI::doAction(int what) {
           wave->max=255;
           wave->len=end-start;
           for (unsigned int i=start; i<end; i++) {
-            wave->data[i-start]=(sample->data8[i]&0xff)^0x80;
+            wave->data[i-start]=(((unsigned short)sample->data16[i]&0xff00)>>8)^0x80;
           }
           nextWindow=GUI_WINDOW_WAVE_EDIT;
           MARK_MODIFIED;
@@ -1439,6 +1491,12 @@ void FurnaceGUI::doAction(int what) {
     case GUI_ACTION_ORDERS_REMOVE:
       prepareUndo(GUI_UNDO_CHANGE_ORDER);
       e->deleteOrder();
+      if (curOrder>=e->curSubSong->ordersLen) {
+        curOrder=e->curSubSong->ordersLen-1;
+        oldOrder=curOrder;
+        oldOrder1=curOrder;
+        e->setOrder(curOrder);
+      }
       makeUndo(GUI_UNDO_CHANGE_ORDER);
       break;
     case GUI_ACTION_ORDERS_MOVE_UP:

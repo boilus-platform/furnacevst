@@ -331,7 +331,9 @@ void DivPlatformX1_010::tick(bool sysTick) {
       }
     }
     if ((!chan[i].pcm) || chan[i].furnacePCM) {
-      if (chan[i].std.arp.had) {
+      if (NEW_ARP_STRAT) {
+        chan[i].handleArp();
+      } else if (chan[i].std.arp.had) {
         if (!chan[i].inPorta) {
           chan[i].baseFreq=NoteX1_010(i,parent->calcArp(chan[i].note,chan[i].std.arp.val));
         }
@@ -475,7 +477,8 @@ void DivPlatformX1_010::tick(bool sysTick) {
           }
         }
       }
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,false,2,chan[i].pitch2,chipClock,chan[i].pcm?off:CHIP_FREQBASE);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,2,chan[i].pitch2,chipClock,chan[i].pcm?off:CHIP_FREQBASE);
+      if (chan[i].fixedFreq) chan[i].freq=chan[i].fixedFreq;
       if (chan[i].pcm) {
         if (chan[i].freq<1) chan[i].freq=1;
         if (chan[i].freq>255) chan[i].freq=255;
@@ -536,7 +539,7 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
         if (chan[c.chan].furnacePCM) {
           chan[c.chan].pcm=true;
           chan[c.chan].macroInit(ins);
-          chan[c.chan].sample=ins->amiga.getSample(c.value);
+          if (c.value!=DIV_NOTE_NULL) chan[c.chan].sample=ins->amiga.getSample(c.value);
           if (chan[c.chan].sample>=0 && chan[c.chan].sample<parent->song.sampleLen) {
             DivSample* s=parent->getSample(chan[c.chan].sample);
             if (isBanked) {
@@ -554,11 +557,13 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
             if (c.value!=DIV_NOTE_NULL) {
               chan[c.chan].note=c.value;
               chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note);
+              chan[c.chan].fixedFreq=0;
               chan[c.chan].freqChanged=true;
             }
           } else {
             chan[c.chan].macroInit(NULL);
             chan[c.chan].outVol=chan[c.chan].vol;
+            // huh?
             if ((12*sampleBank+c.value%12)>=parent->song.sampleLen) {
               chWrite(c.chan,0,0); // reset
               chWrite(c.chan,1,0);
@@ -571,7 +576,8 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
         } else {
           chan[c.chan].macroInit(NULL);
           chan[c.chan].outVol=chan[c.chan].vol;
-          if ((12*sampleBank+c.value%12)>=parent->song.sampleLen) {
+          chan[c.chan].sample=12*sampleBank+c.value%12;
+          if (chan[c.chan].sample<0 || chan[c.chan].sample>=parent->song.sampleLen) {
             chWrite(c.chan,0,0); // reset
             chWrite(c.chan,1,0);
             chWrite(c.chan,2,0);
@@ -579,7 +585,7 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
             chWrite(c.chan,5,0);
             break;
           }
-          DivSample* s=parent->getSample(12*sampleBank+c.value%12);
+          DivSample* s=parent->getSample(chan[c.chan].sample);
           if (isBanked) {
             bankSlot[chan[c.chan].bankSlot]=sampleOffX1[chan[c.chan].sample]>>17;
             unsigned int bankedOffs=(chan[c.chan].bankSlot<<17)|(sampleOffX1[chan[c.chan].sample]&0x1ffff);
@@ -591,12 +597,14 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
             int end=(sampleOffX1[chan[c.chan].sample]+s->length8+0xfff)&~0xfff; // padded
             chWrite(c.chan,5,(0x100-(end>>12))&0xff);
           }
-          chan[c.chan].baseFreq=(((unsigned int)s->rate)<<4)/(chipClock/512);
+          // ????
+          chan[c.chan].fixedFreq=(((unsigned int)s->rate)<<4)/(chipClock/512);
           chan[c.chan].freqChanged=true;
         }
       } else if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].note=c.value;
         chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note);
+        chan[c.chan].fixedFreq=0;
         chan[c.chan].freqChanged=true;
       }
       chan[c.chan].active=true;
@@ -719,14 +727,14 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
     }
     case DIV_CMD_LEGATO:
       chan[c.chan].note=c.value;
-      chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note+((chan[c.chan].std.arp.will&&!chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val):(0)));
+      chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
       chan[c.chan].freqChanged=true;
       break;
     case DIV_CMD_PRE_PORTA:
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_X1_010));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NoteX1_010(c.chan,chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_SAMPLE_FREQ:
@@ -812,6 +820,12 @@ int DivPlatformX1_010::dispatch(DivCommand c) {
       break;
     case DIV_CMD_GET_VOLMAX:
       return 15;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -916,6 +930,7 @@ void DivPlatformX1_010::setFlags(const DivConfig& flags) {
       chipClock=16000000;
       break;
   }
+  CHECK_CUSTOM_CLOCK;
   rate=chipClock/512;
   stereo=flags.getBool("stereo",false);
   for (int i=0; i<16; i++) {
@@ -943,13 +958,25 @@ size_t DivPlatformX1_010::getSampleMemUsage(int index) {
   return index >= 0 ? sampleMemLen : 0;
 }
 
-void DivPlatformX1_010::renderSamples() {
+bool DivPlatformX1_010::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>255) return false;
+  return sampleLoaded[sample];
+}
+
+void DivPlatformX1_010::renderSamples(int sysID) {
   memset(sampleMem,0,getSampleMemCapacity());
   memset(sampleOffX1,0,256*sizeof(unsigned int));
+  memset(sampleLoaded,0,256*sizeof(bool));
 
   size_t memPos=0;
   for (int i=0; i<parent->song.sampleLen; i++) {
     DivSample* s=parent->song.sample[i];
+    if (!s->renderOn[0][sysID]) {
+      sampleOffX1[i]=0;
+      continue;
+    }
+    
     int paddedLen=(s->length8+4095)&(~0xfff);
     if (isBanked) {
     // fit sample bank size to 128KB for Seta 2 external bankswitching logic (not emulated yet!)
@@ -969,6 +996,7 @@ void DivPlatformX1_010::renderSamples() {
       logW("out of X1-010 memory for sample %d!",i);
     } else {
       memcpy(sampleMem+memPos,s->data8,paddedLen);
+      sampleLoaded[i]=true;
     }
     sampleOffX1[i]=memPos;
     memPos+=paddedLen;

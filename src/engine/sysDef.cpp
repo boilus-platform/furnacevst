@@ -23,6 +23,10 @@
 #include "song.h"
 #include "../ta-log.h"
 
+DivSysDef* DivEngine::sysDefs[256];
+DivSystem DivEngine::sysFileMapFur[256];
+DivSystem DivEngine::sysFileMapDMF[256];
+
 DivSystem DivEngine::systemFromFileFur(unsigned char val) {
   return sysFileMapFur[val];
 }
@@ -693,6 +697,9 @@ void DivEngine::registerSystems() {
       {0x12, {DIV_CMD_STD_NOISE_MODE, "12xx: Set duty cycle/noise mode (pulse: 0 to 3; noise: 0 or 1)"}},
       {0x13, {DIV_CMD_NES_SWEEP, "13xy: Sweep up (x: time; y: shift)",constVal<0>,effectVal}},
       {0x14, {DIV_CMD_NES_SWEEP, "14xy: Sweep down (x: time; y: shift)",constVal<1>,effectVal}},
+      {0x15, {DIV_CMD_NES_ENV_MODE, "15xx: Set envelope mode (0: envelope, 1: length, 2: looping, 3: constant)"}},
+      {0x16, {DIV_CMD_NES_LENGTH, "16xx: Set length counter (refer to manual for a list of values)"}},
+      {0x17, {DIV_CMD_NES_COUNT_MODE, "17xx: Set frame counter mode (0: 4-step, 1: 5-step)"}},
       {0x18, {DIV_CMD_SAMPLE_MODE, "18xx: Select PCM/DPCM mode (0: PCM; 1: DPCM)"}}
     }
   );
@@ -788,6 +795,7 @@ void DivEngine::registerSystems() {
       {0x10, {DIV_CMD_AMIGA_FILTER, "10xx: Toggle filter (0 disables; 1 enables)"}},
       {0x11, {DIV_CMD_AMIGA_AM, "11xx: Toggle AM with next channel"}},
       {0x12, {DIV_CMD_AMIGA_PM, "12xx: Toggle period modulation with next channel"}},
+      {0x13, {DIV_CMD_WAVE, "13xx: Set waveform"}}
     }
   );
 
@@ -998,7 +1006,7 @@ void DivEngine::registerSystems() {
     }
   );
 
-  sysDefs[DIV_SYSTEM_OPN]=new DivSysDef(
+  sysDefs[DIV_SYSTEM_YM2203]=new DivSysDef(
     "Yamaha YM2203 (OPN)", NULL, 0x8d, 0, 6, true, true, 0x151, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
     "cost-reduced version of the OPM with a different register layout and no stereo...\n...but it has a built-in AY-3-8910! (actually an YM2149)",
     {"FM 1", "FM 2", "FM 3", "PSG 1", "PSG 2", "PSG 3"},
@@ -1010,7 +1018,7 @@ void DivEngine::registerSystems() {
     fmOPNPostEffectHandlerMap
   );
 
-  sysDefs[DIV_SYSTEM_OPN_EXT]=new DivSysDef(
+  sysDefs[DIV_SYSTEM_YM2203_EXT]=new DivSysDef(
     "Yamaha YM2203 (OPN) Extended Channel 3", NULL, 0xb6, 0, 9, true, true, 0x151, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
     "cost-reduced version of the OPM with a different register layout and no stereo...\n...but it has a built-in AY-3-8910! (actually an YM2149)\nthis one is in Extended Channel mode, which turns the third FM channel into four operators with independent notes/frequencies",
     {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "PSG 1", "PSG 2", "PSG 3"},
@@ -1022,7 +1030,19 @@ void DivEngine::registerSystems() {
     fmOPNPostEffectHandlerMap
   );
 
-  sysDefs[DIV_SYSTEM_PC98]=new DivSysDef(
+  sysDefs[DIV_SYSTEM_YM2203_CSM]=new DivSysDef(
+    "Yamaha YM2203 (OPN) CSM", NULL, 0xc3, 0, 10, true, true, 0x151, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+    "cost-reduced version of the OPM with a different register layout and no stereo...\n...but it has a built-in AY-3-8910! (actually an YM2149)\nCSM blah blah",
+    {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "CSM Timer", "PSG 1", "PSG 2", "PSG 3"},
+    {"F1", "F2", "O1", "O2", "O3", "O4", "CSM", "S1", "S2", "S3"},
+    {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_NOISE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE},
+    {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY},
+    {},
+    fmEffectHandlerMap,
+    fmOPNPostEffectHandlerMap
+  );
+
+  sysDefs[DIV_SYSTEM_YM2608]=new DivSysDef(
     "Yamaha YM2608 (OPNA)", NULL, 0x8e, 0, 16, true, true, 0x151, false, (1U<<DIV_SAMPLE_DEPTH_ADPCM_B)|(1U<<DIV_SAMPLE_DEPTH_8BIT),
     "OPN but twice the FM channels, stereo makes a come-back and has rhythm and ADPCM channels.",
     {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6", "Square 1", "Square 2", "Square 3", "Kick", "Snare", "Top", "HiHat", "Tom", "Rim", "ADPCM"},
@@ -1034,7 +1054,7 @@ void DivEngine::registerSystems() {
     fmOPNAPostEffectHandlerMap
   );
 
-  sysDefs[DIV_SYSTEM_PC98_EXT]=new DivSysDef(
+  sysDefs[DIV_SYSTEM_YM2608_EXT]=new DivSysDef(
     "Yamaha YM2608 (OPNA) Extended Channel 3", NULL, 0xb7, 0, 19, true, true, 0x151, false, (1U<<DIV_SAMPLE_DEPTH_ADPCM_B)|(1U<<DIV_SAMPLE_DEPTH_8BIT),
     "OPN but twice the FM channels, stereo makes a come-back and has rhythm and ADPCM channels.\nthis one is in Extended Channel mode, which turns the third FM channel into four operators with independent notes/frequencies",
     {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "FM 4", "FM 5", "FM 6", "Square 1", "Square 2", "Square 3", "Kick", "Snare", "Top", "HiHat", "Tom", "Rim", "ADPCM"},
@@ -1042,6 +1062,18 @@ void DivEngine::registerSystems() {
     {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_PCM},
     {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
     {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA},
+    fmEffectHandlerMap,
+    fmOPNAPostEffectHandlerMap
+  );
+
+  sysDefs[DIV_SYSTEM_YM2608_CSM]=new DivSysDef(
+    "Yamaha YM2608 (OPNA) CSM", NULL, 0xc4, 0, 20, true, true, 0x151, false, (1U<<DIV_SAMPLE_DEPTH_ADPCM_B)|(1U<<DIV_SAMPLE_DEPTH_8BIT),
+    "OPN but twice the FM channels, stereo makes a come-back and has rhythm and ADPCM channels.\nCSM blah blah",
+    {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "FM 4", "FM 5", "FM 6", "CSM Timer", "Square 1", "Square 2", "Square 3", "Kick", "Snare", "Top", "HiHat", "Tom", "Rim", "ADPCM"},
+    {"F1", "F2", "O1", "O2", "O3", "O4", "F4", "F5", "F6", "CSM", "S1", "S2", "S3", "BD", "SD", "TP", "HH", "TM", "RM", "P"},
+    {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM, DIV_CH_NOISE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_NOISE, DIV_CH_PCM},
+    {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
+    {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA},
     fmEffectHandlerMap,
     fmOPNAPostEffectHandlerMap
   );
@@ -1101,13 +1133,27 @@ void DivEngine::registerSystems() {
     {DIV_INS_BEEPER}
   );
 
+  sysDefs[DIV_SYSTEM_PONG]=new DivSysDef(
+    "Pong", NULL, 0xfc, 0, 1, false, true, 0, false, 0,
+    "LOL",
+    {"Square"},
+    {"SQ"},
+    {DIV_CH_PULSE},
+    {DIV_INS_BEEPER}
+  );
+
   sysDefs[DIV_SYSTEM_POKEY]=new DivSysDef(
-    "POKEY", NULL, 0x94, 0, 4, false, true, 0, false, 0,
+    "POKEY", NULL, 0x94, 0, 4, false, true, 0x161, false, 0,
     "TIA, but better and more flexible.\nused in the Atari 8-bit family of computers (400/800/XL/XE).",
     {"Channel 1", "Channel 2", "Channel 3", "Channel 4"},
     {"CH1", "CH2", "CH3", "CH4"},
     {DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_WAVE},
-    {DIV_INS_POKEY, DIV_INS_POKEY, DIV_INS_POKEY, DIV_INS_POKEY}
+    {DIV_INS_POKEY, DIV_INS_POKEY, DIV_INS_POKEY, DIV_INS_POKEY},
+    {},
+    {
+      {0x10, {DIV_CMD_WAVE, "10xx: Set waveform (0 to 7)"}},
+      {0x11, {DIV_CMD_STD_NOISE_MODE, "11xx: Set AUDCTL"}},
+    }
   );
 
   sysDefs[DIV_SYSTEM_RF5C68]=new DivSysDef(
@@ -1154,10 +1200,10 @@ void DivEngine::registerSystems() {
   sysDefs[DIV_SYSTEM_POKEMINI]=new DivSysDef(
     "Pokémon Mini", NULL, 0x99, 0, 1, false, true, 0, false, 0,
     "this one is like PC Speaker but has duty cycles.",
-    {"Square"},
-    {"SQ"},
+    {"Pulse"},
+    {"P"},
     {DIV_CH_PULSE},
-    {DIV_INS_BEEPER}
+    {DIV_INS_POKEMINI}
   );
 
   sysDefs[DIV_SYSTEM_SEGAPCM]=new DivSysDef(
@@ -1173,12 +1219,21 @@ void DivEngine::registerSystems() {
   );
 
   sysDefs[DIV_SYSTEM_VBOY]=new DivSysDef(
-    "Virtual Boy", NULL, 0x9c, 0, 6, false, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+    "Virtual Boy", NULL, 0x9c, 0, 6, false, true, 0x171, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
     "a console which failed to sell well due to its headache-inducing features.",
     {"Channel 1", "Channel 2", "Channel 3", "Channel 4", "Channel 5", "Noise"},
     {"CH1", "CH2", "CH3", "CH4", "CH5", "NO"},
     {DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_WAVE, DIV_CH_NOISE},
-    {DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY}
+    {DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY, DIV_INS_VBOY},
+    {},
+    {
+      {0x10, {DIV_CMD_WAVE, "10xx: Set waveform"}},
+      {0x11, {DIV_CMD_STD_NOISE_MODE, "11xx: Set noise length (0 to 7)"}},
+      {0x12, {DIV_CMD_STD_NOISE_FREQ, "12xy: Setup envelope (x: enabled/loop (1: enable, 3: enable+loop); y: speed/direction (0-7: down, 8-F: up))"}},
+      {0x13, {DIV_CMD_GB_SWEEP_TIME, "13xy: Setup sweep (x: speed; y: shift; channel 5 only)"}},
+      {0x14, {DIV_CMD_FDS_MOD_DEPTH, "14xy: Setup modulation (x: enabled/loop (1: enable, 3: enable+loop); y: speed; channel 5 only)"}},
+      {0x15, {DIV_CMD_FDS_MOD_WAVE, "15xx: Set modulation waveform (x: wavetable; channel 5 only)"}},
+    }
   );
 
   sysDefs[DIV_SYSTEM_VRC7]=new DivSysDef(
@@ -1227,6 +1282,18 @@ void DivEngine::registerSystems() {
     {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM},
     {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM},
     {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA},
+    fmOPN2EffectHandlerMap,
+    fmOPN2PostEffectHandlerMap
+  );
+
+  sysDefs[DIV_SYSTEM_YM2612_CSM]=new DivSysDef(
+    "Yamaha YM2612 (OPN2) CSM", NULL, 0xc1, 0, 10, true, false, 0x150, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+    "this chip is mostly known for being in the Sega Genesis (but it also was on the FM Towns computer).\nthis one includes CSM mode control for special effects on Channel 3.",
+    {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "FM 4", "FM 5", "FM 6", "CSM Timer"},
+    {"F1", "F2", "O1", "O2", "O3", "O4", "F4", "F5", "F6", "CSM"},
+    {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM, DIV_CH_NOISE},
+    {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM},
+    {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA, DIV_INS_NULL},
     fmOPN2EffectHandlerMap,
     fmOPN2PostEffectHandlerMap
   );
@@ -1298,6 +1365,18 @@ void DivEngine::registerSystems() {
     {DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM},
     {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
     {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA},
+    fmEffectHandlerMap,
+    fmOPNAPostEffectHandlerMap
+  );
+
+  sysDefs[DIV_SYSTEM_YM2610_CSM]=new DivSysDef(
+    "Yamaha YM2610 (OPNB) CSM", NULL, 0xc2, 0, 18, true, false, 0x151, false, (1U<<DIV_SAMPLE_DEPTH_ADPCM_A)|(1U<<DIV_SAMPLE_DEPTH_ADPCM_B)|(1U<<DIV_SAMPLE_DEPTH_8BIT),
+    "this chip was used in SNK's Neo Geo arcade board and video game console.\nit's like OPNA but the rhythm channels are ADPCM channels and two FM channels went missing.\nthis one includes CSM mode control for special effects on Channel 2.",
+    {"FM 1", "FM 2 OP1", "FM 2 OP2", "FM 2 OP3", "FM 2 OP4", "FM 3", "FM 4", "CSM Timer", "PSG 1", "PSG 2", "PSG 3", "ADPCM-A 1", "ADPCM-A 2", "ADPCM-A 3", "ADPCM-A 4", "ADPCM-A 5", "ADPCM-A 6", "ADPCM-B"},
+    {"F1", "O1", "O2", "O3", "O4", "F3", "F4", "CSM", "S1", "S2", "S3", "P1", "P2", "P3", "P4", "P5", "P6", "B"},
+    {DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_NOISE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM},
+    {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
+    {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA},
     fmEffectHandlerMap,
     fmOPNAPostEffectHandlerMap
   );
@@ -1375,6 +1454,18 @@ void DivEngine::registerSystems() {
     {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM},
     {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
     {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA},
+    fmEffectHandlerMap,
+    fmOPNAPostEffectHandlerMap
+  );
+
+  sysDefs[DIV_SYSTEM_YM2610B_CSM]=new DivSysDef(
+    "Yamaha YM2610B (OPNB2) CSM", NULL, 0xc5, 0, 20, true, false, 0x151, false, (1U<<DIV_SAMPLE_DEPTH_ADPCM_A)|(1U<<DIV_SAMPLE_DEPTH_ADPCM_B)|(1U<<DIV_SAMPLE_DEPTH_8BIT),
+    "so Taito asked Yamaha if they could get the two missing FM channels back, and Yamaha gladly provided them with this chip.\nCSM blah blah",
+    {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "FM 4", "FM 5", "FM 6", "CSM Timer", "PSG 1", "PSG 2", "PSG 3", "ADPCM-A 1", "ADPCM-A 2", "ADPCM-A 3", "ADPCM-A 4", "ADPCM-A 5", "ADPCM-A 6", "ADPCM-B"},
+    {"F1", "F2", "O1", "O2", "O3", "O4", "F4", "F5", "F6", "CSM", "S1", "S2", "S3", "P1", "P2", "P3", "P4", "P5", "P6", "B"},
+    {DIV_CH_FM, DIV_CH_FM, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_OP, DIV_CH_FM, DIV_CH_FM, DIV_CH_FM, DIV_CH_NOISE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM},
+    {DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_FM, DIV_INS_AY, DIV_INS_AY, DIV_INS_AY, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMA, DIV_INS_ADPCMB},
+    {DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_NULL, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA},
     fmEffectHandlerMap,
     fmOPNAPostEffectHandlerMap
   );
@@ -1543,7 +1634,7 @@ void DivEngine::registerSystems() {
   );
 
   sysDefs[DIV_SYSTEM_MSM6258]=new DivSysDef(
-    "OKI MSM6258", NULL, 0xab, 0, 1, false, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_VOX,
+    "OKI MSM6258", NULL, 0xab, 0, 1, false, true, 0x150, false, 1U<<DIV_SAMPLE_DEPTH_VOX,
     "an ADPCM sound chip manufactured by OKI and used in the Sharp X68000.",
     {"Sample"},
     {"PCM"},
@@ -1610,11 +1701,19 @@ void DivEngine::registerSystems() {
     {"Channel 1", "Channel 2", "Channel 3", "Channel 4", "Channel 5", "Channel 6", "Channel 7", "Channel 8"},
     {"CH1", "CH2", "CH3", "CH4", "CH5", "CH6", "CH7", "CH8"},
     {DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE},
-    {DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232}
+    {DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232, DIV_INS_MSM5232},
+    {},
+    {},
+    {
+      {0x10, {DIV_CMD_WAVE, "10xy: Set group control (x: sustain; y: part toggle bitmask)"}},
+      {0x11, {DIV_CMD_STD_NOISE_MODE, "11xx: Set noise mode"}},
+      {0x12, {DIV_CMD_FM_AR, "12xx: Set group attack (0 to 5)"}},
+      {0x13, {DIV_CMD_FM_DR, "13xx: Set group decay (0 to 11)"}}
+    }
   );
 
-  sysDefs[DIV_SYSTEM_YM2612_FRAC]=new DivSysDef(
-    "Yamaha YM2612 (OPN2) with DualPCM", NULL, 0xbe, 0, 7, true, false, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+  sysDefs[DIV_SYSTEM_YM2612_DUALPCM]=new DivSysDef(
+    "Yamaha YM2612 (OPN2) with DualPCM", NULL, 0xbe, 0, 7, true, false, 0x150, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
     "this chip is mostly known for being in the Sega Genesis (but it also was on the FM Towns computer).\nthis system uses software mixing to provide two sample channels.",
     {"FM 1", "FM 2", "FM 3", "FM 4", "FM 5", "FM 6/PCM 1", "PCM 2"},
     {"F1", "F2", "F3", "F4", "F5", "P1", "P2"},
@@ -1625,8 +1724,8 @@ void DivEngine::registerSystems() {
     fmOPN2PostEffectHandlerMap
   );
 
-  sysDefs[DIV_SYSTEM_YM2612_FRAC_EXT]=new DivSysDef(
-    "Yamaha YM2612 (OPN2) Extended Channel 3 with DualPCM and CSM", NULL, 0xbd, 0, 11, true, false, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+  sysDefs[DIV_SYSTEM_YM2612_DUALPCM_EXT]=new DivSysDef(
+    "Yamaha YM2612 (OPN2) Extended Channel 3 with DualPCM and CSM", NULL, 0xbd, 0, 11, true, false, 0x150, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
     "this chip is mostly known for being in the Sega Genesis (but it also was on the FM Towns computer).\nthis system uses software mixing to provide two sample channels.\nthis one is in Extended Channel mode, which turns the third FM channel into four operators with independent notes/frequencies.",
     {"FM 1", "FM 2", "FM 3 OP1", "FM 3 OP2", "FM 3 OP3", "FM 3 OP4", "FM 4", "FM 5", "FM 6/PCM 1", "PCM 2", "CSM Timer"},
     {"F1", "F2", "O1", "O2", "O3", "O4", "F4", "F5", "P1", "P2", "CSM"},
@@ -1638,15 +1737,15 @@ void DivEngine::registerSystems() {
   );
 
   sysDefs[DIV_SYSTEM_T6W28]=new DivSysDef(
-    "T6W28", NULL, 0xbf, 0, 4, false, true, 0, false, 0,
+    "T6W28", NULL, 0xbf, 0, 4, false, true, 0x160, false, 0,
     "an SN76489 derivative used in Neo Geo Pocket, has independent stereo volume and noise channel frequency.",
     {"Square 1", "Square 2", "Square 3", "Noise"},
     {"S1", "S2", "S3", "NO"},
     {DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_PULSE, DIV_CH_NOISE},
-    {DIV_INS_STD, DIV_INS_STD, DIV_INS_STD, DIV_INS_STD},
+    {DIV_INS_T6W28, DIV_INS_T6W28, DIV_INS_T6W28, DIV_INS_T6W28},
     {},
     {
-      {0x20, {DIV_CMD_STD_NOISE_MODE, "20xy: Set noise mode (x: preset/variable; y: thin pulse/noise)"}}
+      {0x20, {DIV_CMD_STD_NOISE_MODE, "20xx: Set noise length (0: short, 1: long)"}}
     }
   );
 
@@ -1657,6 +1756,26 @@ void DivEngine::registerSystems() {
     {"PCM"},
     {DIV_CH_PCM},
     {DIV_INS_AMIGA}
+  );
+
+  sysDefs[DIV_SYSTEM_K007232]=new DivSysDef(
+    "Konami K007232", NULL, 0xc6, 0, 2, false, true, 0, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+    "this PCM chip was widely used at Konami arcade boards in 1986-1990.",
+    {"Channel 1", "Channel 2"},
+    {"CH1", "CH2"},
+    {DIV_CH_PCM, DIV_CH_PCM},
+    {DIV_INS_K007232, DIV_INS_K007232},
+    {DIV_INS_AMIGA, DIV_INS_AMIGA}
+  );
+
+  sysDefs[DIV_SYSTEM_GA20]=new DivSysDef(
+    "Irem GA20", NULL, 0xc7, 0, 4, false, true, 0x171, false, 1U<<DIV_SAMPLE_DEPTH_8BIT,
+    "yet another PCM chip from Irem.",
+    {"Channel 1", "Channel 2", "Channel 3", "Channel 4"},
+    {"CH1", "CH2", "CH3", "CH4"},
+    {DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM, DIV_CH_PCM},
+    {DIV_INS_GA20, DIV_INS_GA20, DIV_INS_GA20, DIV_INS_GA20},
+    {DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA, DIV_INS_AMIGA}
   );
 
   sysDefs[DIV_SYSTEM_DUMMY]=new DivSysDef(

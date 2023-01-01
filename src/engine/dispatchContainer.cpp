@@ -32,6 +32,7 @@
 #include "platform/nes.h"
 #include "platform/c64.h"
 #include "platform/arcade.h"
+#include "platform/t6w28.h"
 #include "platform/tx81z.h"
 #include "platform/ym2203.h"
 #include "platform/ym2203ext.h"
@@ -48,6 +49,7 @@
 #include "platform/saa.h"
 #include "platform/amiga.h"
 #include "platform/pcspkr.h"
+#include "platform/pokemini.h"
 #include "platform/segapcm.h"
 #include "platform/qsound.h"
 #include "platform/vera.h"
@@ -55,10 +57,12 @@
 #include "platform/su.h"
 #include "platform/swan.h"
 #include "platform/lynx.h"
+#include "platform/pokey.h"
 #include "platform/zxbeeper.h"
 #include "platform/bubsyswsg.h"
 #include "platform/n163.h"
 #include "platform/pet.h"
+#include "platform/pong.h"
 #include "platform/vic20.h"
 #include "platform/vrc6.h"
 #include "platform/fds.h"
@@ -67,6 +71,9 @@
 #include "platform/ymz280b.h"
 #include "platform/rf5c68.h"
 #include "platform/snes.h"
+#include "platform/vb.h"
+#include "platform/k007232.h"
+#include "platform/ga20.h"
 #include "platform/pcmdac.h"
 #include "platform/dummy.h"
 #include "../ta-log.h"
@@ -194,12 +201,18 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
       ((DivPlatformGenesisExt*)dispatch)->setYMFM(eng->getConfInt("ym2612Core",0));
       ((DivPlatformGenesisExt*)dispatch)->setSoftPCM(false);
       break;
-    case DIV_SYSTEM_YM2612_FRAC:
+    case DIV_SYSTEM_YM2612_CSM:
+      dispatch=new DivPlatformGenesisExt;
+      ((DivPlatformGenesisExt*)dispatch)->setYMFM(eng->getConfInt("ym2612Core",0));
+      ((DivPlatformGenesisExt*)dispatch)->setSoftPCM(false);
+      ((DivPlatformGenesisExt*)dispatch)->setCSMChannel(6);
+      break;
+    case DIV_SYSTEM_YM2612_DUALPCM:
       dispatch=new DivPlatformGenesis;
       ((DivPlatformGenesis*)dispatch)->setYMFM(eng->getConfInt("ym2612Core",0));
       ((DivPlatformGenesis*)dispatch)->setSoftPCM(true);
       break;
-    case DIV_SYSTEM_YM2612_FRAC_EXT:
+    case DIV_SYSTEM_YM2612_DUALPCM_EXT:
       dispatch=new DivPlatformGenesisExt;
       ((DivPlatformGenesisExt*)dispatch)->setYMFM(eng->getConfInt("ym2612Core",0));
       ((DivPlatformGenesisExt*)dispatch)->setSoftPCM(true);
@@ -235,16 +248,20 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
     case DIV_SYSTEM_YM2610:
     case DIV_SYSTEM_YM2610_FULL:
       dispatch=new DivPlatformYM2610;
+      ((DivPlatformYM2610*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
     case DIV_SYSTEM_YM2610_EXT:
     case DIV_SYSTEM_YM2610_FULL_EXT:
       dispatch=new DivPlatformYM2610Ext;
+      ((DivPlatformYM2610Ext*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
     case DIV_SYSTEM_YM2610B:
       dispatch=new DivPlatformYM2610B;
+      ((DivPlatformYM2610B*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
     case DIV_SYSTEM_YM2610B_EXT:
       dispatch=new DivPlatformYM2610BExt;
+      ((DivPlatformYM2610BExt*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
     case DIV_SYSTEM_AMIGA:
       dispatch=new DivPlatformAmiga;
@@ -262,17 +279,21 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
     case DIV_SYSTEM_TIA:
       dispatch=new DivPlatformTIA;
       break;
-    case DIV_SYSTEM_OPN:
+    case DIV_SYSTEM_YM2203:
       dispatch=new DivPlatformYM2203;
+      ((DivPlatformYM2203*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
-    case DIV_SYSTEM_OPN_EXT:
+    case DIV_SYSTEM_YM2203_EXT:
       dispatch=new DivPlatformYM2203Ext;
+      ((DivPlatformYM2203Ext*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
-    case DIV_SYSTEM_PC98:
+    case DIV_SYSTEM_YM2608:
       dispatch=new DivPlatformYM2608;
+      ((DivPlatformYM2608*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
-    case DIV_SYSTEM_PC98_EXT:
+    case DIV_SYSTEM_YM2608_EXT:
       dispatch=new DivPlatformYM2608Ext;
+      ((DivPlatformYM2608Ext*)dispatch)->setCombo(eng->getConfInt("opnCore",1)==1);
       break;
     case DIV_SYSTEM_OPLL:
     case DIV_SYSTEM_OPLL_DRUMS:
@@ -323,11 +344,18 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
     case DIV_SYSTEM_PCSPKR:
       dispatch=new DivPlatformPCSpeaker;
       break;
+    case DIV_SYSTEM_POKEMINI:
+      dispatch=new DivPlatformPokeMini;
+      break;
     case DIV_SYSTEM_SFX_BEEPER:
       dispatch=new DivPlatformZXBeeper;
       break;
     case DIV_SYSTEM_LYNX:
       dispatch=new DivPlatformLynx;
+      break;
+    case DIV_SYSTEM_POKEY:
+      dispatch=new DivPlatformPOKEY;
+      ((DivPlatformPOKEY*)dispatch)->setAltASAP(eng->getConfInt("pokeyCore",1)==1);
       break;
     case DIV_SYSTEM_QSOUND:
       dispatch=new DivPlatformQSound;
@@ -341,6 +369,12 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
       break;
     case DIV_SYSTEM_SWAN:
       dispatch=new DivPlatformSwan;
+      break;
+    case DIV_SYSTEM_T6W28:
+      dispatch=new DivPlatformT6W28;
+      break;
+    case DIV_SYSTEM_VBOY:
+      dispatch=new DivPlatformVB;
       break;
     case DIV_SYSTEM_VERA:
       dispatch=new DivPlatformVERA;
@@ -356,6 +390,9 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
       break;
     case DIV_SYSTEM_VIC20:
       dispatch=new DivPlatformVIC20;
+      break;
+    case DIV_SYSTEM_PONG:
+      dispatch=new DivPlatformPong;
       break;
     case DIV_SYSTEM_VRC6:
       dispatch=new DivPlatformVRC6;
@@ -405,6 +442,12 @@ void DivDispatchContainer::init(DivSystem sys, DivEngine* eng, int chanCount, do
       break;
     case DIV_SYSTEM_SNES:
       dispatch=new DivPlatformSNES;
+      break;
+    case DIV_SYSTEM_K007232:
+      dispatch=new DivPlatformK007232;
+      break;
+    case DIV_SYSTEM_GA20:
+      dispatch=new DivPlatformGA20;
       break;
     case DIV_SYSTEM_PCM_DAC:
       dispatch=new DivPlatformPCMDAC;

@@ -1,3 +1,5 @@
+#define _USE_MATH_DEFINES
+// OK, sorry for inserting the define here but I'm so tired of this extension
 /**
  * Furnace Tracker - multi-system chiptune tracker
  * Copyright (C) 2021-2022 tildearrow and contributors
@@ -20,7 +22,7 @@
 // I hate you clangd extension!
 // how about you DON'T insert random headers before this freaking important
 // define!!!!!!
-#define _USE_MATH_DEFINES
+
 #include "gui.h"
 #include "util.h"
 #include "icon.h"
@@ -36,16 +38,11 @@
 #include "plot_nolerp.h"
 #include "guiConst.h"
 #include "intConst.h"
+#include "scaling.h"
 #include <stdint.h>
 #include <zlib.h>
 #include <fmt/printf.h>
 #include <stdexcept>
-
-#ifdef __APPLE__
-extern "C" {
-#include "macstuff.h"
-}
-#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -495,6 +492,15 @@ bool FurnaceGUI::CWVSliderInt(const char* label, const ImVec2& size, int* v, int
   return CWVSliderScalar(label,size,ImGuiDataType_S32,v,&v_min,&v_max,format,flags);
 }
 
+bool FurnaceGUI::InvCheckbox(const char* label, bool* value) {
+  bool t=!(*value);
+  if (ImGui::Checkbox(label,&t)) {
+    *value=!t;
+    return true;
+  }
+  return false;
+}
+
 const char* FurnaceGUI::getSystemName(DivSystem which) {
   /*
   if (settings.chipNames) {
@@ -590,12 +596,14 @@ void FurnaceGUI::updateWindowTitle() {
 
 void FurnaceGUI::autoDetectSystem() {
   std::map<DivSystem,int> sysCountMap;
+  std::map<DivSystem,DivConfig> sysConfMap;
   for (int i=0; i<e->song.systemLen; i++) {
     try {
       sysCountMap.at(e->song.system[i])++;
     } catch (std::exception& ex) {
       sysCountMap[e->song.system[i]]=1;
     }
+    sysConfMap[e->song.system[i]]=e->song.systemFlags[i];
   }
 
   logV("sysCountMap:");
@@ -605,29 +613,45 @@ void FurnaceGUI::autoDetectSystem() {
 
   bool isMatch=false;
   std::map<DivSystem,int> defCountMap;
+  std::map<DivSystem,DivConfig> defConfMap;
   for (FurnaceGUISysCategory& i: sysCategories) {
     for (FurnaceGUISysDef& j: i.systems) {
       defCountMap.clear();
-      for (size_t k=0; k<j.definition.size(); k+=4) {
-        if (j.definition[k]==0) break;
+      defConfMap.clear();
+      for (FurnaceGUISysDefChip& k: j.orig) {
         try {
-          defCountMap.at((DivSystem)j.definition[k])++;
+          defCountMap.at(k.sys)++;
         } catch (std::exception& ex) {
-          defCountMap[(DivSystem)j.definition[k]]=1;
+          defCountMap[k.sys]=1;
         }
+        DivConfig dc;
+        dc.loadFromMemory(k.flags);
+        defConfMap[k.sys]=dc;
       }
       if (defCountMap.size()!=sysCountMap.size()) continue;
       isMatch=true;
-      logV("trying on defCountMap: %s",j.name);
+      /*logV("trying on defCountMap: %s",j.name);
       for (std::pair<DivSystem,int> k: defCountMap) {
         logV("- %s: %d",e->getSystemName(k.first),k.second);
-      }
+      }*/
       for (std::pair<DivSystem,int> k: defCountMap) {
         try {
           if (sysCountMap.at(k.first)!=k.second) {
             isMatch=false;
             break;
           }
+          DivConfig& sysDC=sysConfMap.at(k.first);
+          for (std::pair<String,String> l: defConfMap.at(k.first).configMap()) {
+            if (!sysDC.has(l.first)) {
+              isMatch=false;
+              break;
+            }
+            if (sysDC.getString(l.first,"")!=l.second) {
+              isMatch=false;
+              break;
+            }
+          }
+          if (!isMatch) break;
         } catch (std::exception& ex) {
           isMatch=false;
           break;
@@ -1038,13 +1062,13 @@ void FurnaceGUI::noteInput(int num, int key, int vol) {
 
   prepareUndo(GUI_UNDO_PATTERN_EDIT);
 
-  if (key==100) { // note off
+  if (key==GUI_NOTE_OFF) { // note off
     pat->data[cursor.y][0]=100;
     pat->data[cursor.y][1]=0;
-  } else if (key==101) { // note off + env release
+  } else if (key==GUI_NOTE_OFF_RELEASE) { // note off + env release
     pat->data[cursor.y][0]=101;
     pat->data[cursor.y][1]=0;
-  } else if (key==102) { // env release only
+  } else if (key==GUI_NOTE_RELEASE) { // env release only
     pat->data[cursor.y][0]=102;
     pat->data[cursor.y][1]=0;
   } else {
@@ -1472,8 +1496,12 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
         workingDirIns,
         dpiScale,
         [this](const char* path) {
-          std::vector<DivInstrument*> instruments=e->instrumentFromFile(path);
+          int sampleCountBefore=e->song.sampleLen;
+          std::vector<DivInstrument*> instruments=e->instrumentFromFile(path,false);
           if (!instruments.empty()) {
+            if (e->song.sampleLen!=sampleCountBefore) {
+              e->renderSamplesP();
+            }
             if (curFileDialog==GUI_FILE_INS_OPEN_REPLACE) {
               if (prevIns==-3) {
                 prevIns=curIns;
@@ -1490,10 +1518,21 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
             }
           }
           for (DivInstrument* i: instruments) delete i;
-        }
+        },
+        (type==GUI_FILE_INS_OPEN)
       );
       break;
     case GUI_FILE_INS_SAVE:
+      if (!dirExists(workingDirIns)) workingDirIns=getHomeDir();
+      hasOpened=fileDialog->openSave(
+        "Save Instrument",
+        {"Furnace instrument", "*.fui"},
+        "Furnace instrument{.fui}",
+        workingDirIns,
+        dpiScale
+      );
+      break;
+    case GUI_FILE_INS_SAVE_OLD:
       if (!dirExists(workingDirIns)) workingDirIns=getHomeDir();
       hasOpened=fileDialog->openSave(
         "Save Instrument",
@@ -1522,7 +1561,9 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
          "all files", ".*"},
         "compatible files{.fuw,.dmw},.*",
         workingDirWave,
-        dpiScale
+        dpiScale,
+        NULL, // TODO
+        (type==GUI_FILE_WAVE_OPEN)
       );
       break;
     case GUI_FILE_WAVE_SAVE:
@@ -1564,7 +1605,9 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
          "all files", ".*"},
         "compatible files{.wav,.dmc,.brr},.*",
         workingDirSample,
-        dpiScale
+        dpiScale,
+        NULL, // TODO
+        (type==GUI_FILE_SAMPLE_OPEN)
       );
       break;
     case GUI_FILE_SAMPLE_OPEN_RAW:
@@ -1754,7 +1797,14 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
          "all files", ".*"},
         "compatible files{.fur,.dmf,.mod},another option{.wav,.ttf},.*",
         workingDirTest,
-        dpiScale
+        dpiScale,
+        [](const char* path) {
+          if (path!=NULL) {
+            logI("Callback Result: %s",path);
+          } else {
+            logI("Callback Result: NULL");
+          }
+        }
       );
       break;
     case GUI_FILE_TEST_OPEN_MULTI:
@@ -1767,7 +1817,13 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
         "compatible files{.fur,.dmf,.mod},another option{.wav,.ttf},.*",
         workingDirTest,
         dpiScale,
-        NULL,
+        [](const char* path) {
+          if (path!=NULL) {
+            logI("Callback Result: %s",path);
+          } else {
+            logI("Callback Result: NULL");
+          }
+        },
         true
       );
       break;
@@ -1791,6 +1847,7 @@ void FurnaceGUI::openFileDialog(FurnaceGUIFileDialogs type) {
 
 int FurnaceGUI::save(String path, int dmfVersion) {
   SafeWriter* w;
+  logD("saving file...");
   if (dmfVersion) {
     if (dmfVersion<24) dmfVersion=24;
     w=e->saveDMF(dmfVersion);
@@ -1799,11 +1856,14 @@ int FurnaceGUI::save(String path, int dmfVersion) {
   }
   if (w==NULL) {
     lastError=e->getLastError();
+    logE("couldn't save! %s",lastError);
     return 3;
   }
+  logV("opening file for writing...");
   FILE* outFile=ps_fopen(path.c_str(),"wb");
   if (outFile==NULL) {
     lastError=strerror(errno);
+    logE("couldn't save! %s",lastError);
     w->finish();
     return 1;
   }
@@ -1884,6 +1944,7 @@ int FurnaceGUI::save(String path, int dmfVersion) {
     showWarning(e->getWarnings(),GUI_WARN_GENERIC);
   }
   pushRecentFile(path);
+  logD("save complete.");
   return 0;
 }
 
@@ -1995,6 +2056,10 @@ void FurnaceGUI::showWarning(String what, FurnaceGUIWarnings type) {
 void FurnaceGUI::showError(String what) {
   errorString=what;
   displayError=true;
+}
+
+String FurnaceGUI::getLastError() {
+  return lastError;
 }
 
 // what monster did I just create here?
@@ -2158,6 +2223,12 @@ void FurnaceGUI::processDrags(int dragX, int dragY) {
       }
       sampleSelEnd=x;
     }
+  }
+  if (orderScrollLocked) {
+    if (fabs(orderScrollRealOrigin.x-dragX)>2.0f*dpiScale || fabs(orderScrollRealOrigin.y-dragY)>2.0f*dpiScale) orderScrollTolerance=false;
+    orderScroll=(orderScrollSlideOrigin-dragX)/(40.0*dpiScale);
+    if (orderScroll<0.0f) orderScroll=0.0f;
+    if (orderScroll>(float)e->curSubSong->ordersLen-1) orderScroll=e->curSubSong->ordersLen-1;
   }
 }
 
@@ -2585,9 +2656,15 @@ void FurnaceGUI::toggleMobileUI(bool enable, bool force) {
     mobileUI=enable;
     if (mobileUI) {
       ImGui::GetIO().IniFilename=NULL;
+      ImGui::GetIO().ConfigFlags|=ImGuiConfigFlags_InertialScrollEnable;
+      ImGui::GetIO().ConfigFlags|=ImGuiConfigFlags_NoHoverColors;
+      fileDialog->mobileUI=true;
     } else {
       ImGui::GetIO().IniFilename=NULL;
       ImGui::LoadIniSettingsFromDisk(finalLayoutPath);
+      ImGui::GetIO().ConfigFlags&=~ImGuiConfigFlags_InertialScrollEnable;
+      ImGui::GetIO().ConfigFlags&=~ImGuiConfigFlags_NoHoverColors;
+      fileDialog->mobileUI=false;
     }
   }
 }
@@ -2595,14 +2672,16 @@ void FurnaceGUI::toggleMobileUI(bool enable, bool force) {
 void FurnaceGUI::pushToggleColors(bool status) {
   ImVec4 toggleColor=status?uiColors[GUI_COLOR_TOGGLE_ON]:uiColors[GUI_COLOR_TOGGLE_OFF];
   ImGui::PushStyleColor(ImGuiCol_Button,toggleColor);
-  if (settings.guiColorsBase) {
-    toggleColor.x*=0.8f;
-    toggleColor.y*=0.8f;
-    toggleColor.z*=0.8f;
-  } else {
-    toggleColor.x=CLAMP(toggleColor.x*1.3f,0.0f,1.0f);
-    toggleColor.y=CLAMP(toggleColor.y*1.3f,0.0f,1.0f);
-    toggleColor.z=CLAMP(toggleColor.z*1.3f,0.0f,1.0f);
+  if (!mobileUI) {
+    if (settings.guiColorsBase) {
+      toggleColor.x*=0.8f;
+      toggleColor.y*=0.8f;
+      toggleColor.z*=0.8f;
+    } else {
+      toggleColor.x=CLAMP(toggleColor.x*1.3f,0.0f,1.0f);
+      toggleColor.y=CLAMP(toggleColor.y*1.3f,0.0f,1.0f);
+      toggleColor.z=CLAMP(toggleColor.z*1.3f,0.0f,1.0f);
+    }
   }
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered,toggleColor);
   if (settings.guiColorsBase) {
@@ -2627,8 +2706,11 @@ int _processEvent(void* instance, SDL_Event* event) {
 
 int FurnaceGUI::processEvent(SDL_Event* ev) {
 #ifdef IS_MOBILE
-  if (ev->type==SDL_APP_WILLENTERBACKGROUND) {
-    // TODO: save "last state" and potentially suspend engine
+  if (ev->type==SDL_APP_TERMINATING) {
+    // TODO: save last song state here
+  } else if (ev->type==SDL_APP_WILLENTERBACKGROUND) {
+    commitState();
+    e->saveConf();
   }
 #endif
   if (ev->type==SDL_KEYDOWN) {
@@ -2732,12 +2814,8 @@ void FurnaceGUI::processPoint(SDL_Event& ev) {
       TouchPoint* point=NULL;
       FIND_POINT(point,-1);
       if (point!=NULL) {
-        point->x=ev.motion.x;
-        point->y=ev.motion.y;
-#ifdef __APPLE__
-        point->x*=dpiScale;
-        point->y*=dpiScale;
-#endif
+        point->x=(double)ev.motion.x*((double)canvasW/(double)scrW);
+        point->y=(double)ev.motion.y*((double)canvasH/(double)scrH);
       }
       break;
     }
@@ -2778,8 +2856,8 @@ void FurnaceGUI::processPoint(SDL_Event& ev) {
       if (point!=NULL) {
         float prevX=point->x;
         float prevY=point->y;
-        point->x=ev.tfinger.x*scrW*dpiScale;
-        point->y=ev.tfinger.y*scrH*dpiScale;
+        point->x=ev.tfinger.x*canvasW;
+        point->y=ev.tfinger.y*canvasH;
         point->z=ev.tfinger.pressure;
 
         if (point->id==0) {
@@ -2798,7 +2876,7 @@ void FurnaceGUI::processPoint(SDL_Event& ev) {
           break;
         }
       }
-      TouchPoint newPoint(ev.tfinger.fingerId,ev.tfinger.x*scrW*dpiScale,ev.tfinger.y*scrH*dpiScale,ev.tfinger.pressure);
+      TouchPoint newPoint(ev.tfinger.fingerId,ev.tfinger.x*canvasW,ev.tfinger.y*canvasH,ev.tfinger.pressure);
       activePoints.push_back(newPoint);
       pressedPoints.push_back(newPoint);
 
@@ -2869,14 +2947,38 @@ void FurnaceGUI::pointUp(int x, int y, int button) {
     }
   }
   sampleDragActive=false;
+  if (orderScrollLocked) {
+    int targetOrder=round(orderScroll);
+    if (orderScrollTolerance) {
+      targetOrder=round(orderScroll+(orderScrollRealOrigin.x-((float)canvasW/2.0f))/(40.0f*dpiScale));
+    }
+    if (targetOrder<0) targetOrder=0;
+    if (targetOrder>e->curSubSong->ordersLen-1) targetOrder=e->curSubSong->ordersLen-1;
+    if (curOrder!=targetOrder) setOrder(targetOrder);
+  }
+  orderScrollLocked=false;
+  orderScrollTolerance=false;
+  if (dragMobileMenu) {
+    dragMobileMenu=false;
+    if (mobileMenuOpen) {
+      mobileMenuOpen=(mobileMenuPos>=0.85f);
+    } else {
+      mobileMenuOpen=(mobileMenuPos>=0.15f);
+    }
+  }
+  if (dragMobileEditButton) {
+    dragMobileEditButton=false;
+  }
   if (selecting) {
     if (!selectingFull) cursor=selEnd;
     finishSelection();
-    demandScrollX=true;
-    if (cursor.xCoarse==selStart.xCoarse && cursor.xFine==selStart.xFine && cursor.y==selStart.y &&
-        cursor.xCoarse==selEnd.xCoarse && cursor.xFine==selEnd.xFine && cursor.y==selEnd.y) {
-      if (!settings.cursorMoveNoScroll) {
-        updateScroll(cursor.y);
+    if (!mobileUI) {
+      demandScrollX=true;
+      if (cursor.xCoarse==selStart.xCoarse && cursor.xFine==selStart.xFine && cursor.y==selStart.y &&
+          cursor.xCoarse==selEnd.xCoarse && cursor.xFine==selEnd.xFine && cursor.y==selEnd.y) {
+        if (!settings.cursorMoveNoScroll) {
+          updateScroll(cursor.y);
+        }
       }
     }
   }
@@ -2892,7 +2994,7 @@ void FurnaceGUI::pointMotion(int x, int y, int xrel, int yrel) {
       addScroll(1);
     }
   }
-  if (macroDragActive || macroLoopDragActive || waveDragActive || sampleDragActive) {
+  if (macroDragActive || macroLoopDragActive || waveDragActive || sampleDragActive || orderScrollLocked) {
     int distance=fabs((double)xrel);
     if (distance<1) distance=1;
     float start=x-xrel;
@@ -2938,7 +3040,11 @@ bool FurnaceGUI::detectOutOfBoundsWindow() {
 }
 
 bool FurnaceGUI::loop() {
+#ifdef IS_MOBILE
+  bool doThreadedInput=true;
+#else
   bool doThreadedInput=!settings.noThreadedInput;
+#endif
   if (doThreadedInput) {
     logD("key input: event filter");
     SDL_SetEventFilter(_processEvent,this);
@@ -2958,6 +3064,10 @@ bool FurnaceGUI::loop() {
     }
     eventTimeBegin=SDL_GetPerformanceCounter();
     bool updateWindow=false;
+    if (injectBackUp) {
+      ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace,false);
+      injectBackUp=false;
+    }
     while (SDL_PollEvent(&ev)) {
       WAKE_UP;
       ImGui_ImplSDL2_ProcessEvent(&ev);
@@ -2965,16 +3075,10 @@ bool FurnaceGUI::loop() {
       if (!doThreadedInput) processEvent(&ev);
       switch (ev.type) {
         case SDL_MOUSEMOTION: {
-          int motionX=ev.motion.x;
-          int motionY=ev.motion.y;
-          int motionXrel=ev.motion.xrel;
-          int motionYrel=ev.motion.yrel;
-#ifdef __APPLE__
-          motionX*=dpiScale;
-          motionY*=dpiScale;
-          motionXrel*=dpiScale;
-          motionYrel*=dpiScale;
-#endif
+          int motionX=(double)ev.motion.x*((double)canvasW/(double)scrW);
+          int motionY=(double)ev.motion.y*((double)canvasH/(double)scrH);
+          int motionXrel=(double)ev.motion.xrel*((double)canvasW/(double)scrW);
+          int motionYrel=(double)ev.motion.yrel*((double)canvasH/(double)scrH);
           pointMotion(motionX,motionY,motionXrel,motionYrel);
           break;
         }
@@ -2991,46 +3095,76 @@ bool FurnaceGUI::loop() {
         case SDL_WINDOWEVENT:
           switch (ev.window.event) {
             case SDL_WINDOWEVENT_RESIZED:
-#ifdef __APPLE__
               scrW=ev.window.data1;
               scrH=ev.window.data2;
-#else
-              scrW=ev.window.data1/dpiScale;
-              scrH=ev.window.data2/dpiScale;
-#endif
               portrait=(scrW<scrH);
               logV("portrait: %d (%dx%d)",portrait,scrW,scrH);
+              logD("window resized to %dx%d",scrW,scrH);
               updateWindow=true;
               break;
             case SDL_WINDOWEVENT_MOVED:
               scrX=ev.window.data1;
               scrY=ev.window.data2;
               updateWindow=true;
+              logV("window moved to %dx%d",scrX,scrY);
+              break;
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+              logV("window size changed to %dx%d",ev.window.data1,ev.window.data2);
+              break;
+            case SDL_WINDOWEVENT_MINIMIZED:
+              logV("window minimized");
               break;
             case SDL_WINDOWEVENT_MAXIMIZED:
               scrMax=true;
               updateWindow=true;
+              logV("window maximized");
               break;
             case SDL_WINDOWEVENT_RESTORED:
               scrMax=false;
               updateWindow=true;
+              logV("window restored");
+              break;
+            case SDL_WINDOWEVENT_SHOWN:
+              logV("window shown");
+              break;
+            case SDL_WINDOWEVENT_HIDDEN:
+              logV("window hidden");
+              break;
+            case SDL_WINDOWEVENT_EXPOSED:
+              logV("window exposed");
               break;
           }
           break;
+        case SDL_DISPLAYEVENT: {
+          switch (ev.display.event) {
+            case SDL_DISPLAYEVENT_ORIENTATION:
+              logD("display oriented to %d",ev.display.data1);
+              updateWindow=true;
+              break;
+          }
+          break;
+        }
         case SDL_KEYDOWN:
           if (!ImGui::GetIO().WantCaptureKeyboard) {
             keyDown(ev);
           }
+#ifdef IS_MOBILE
+          injectBackUp=true;
+#endif
           break;
         case SDL_KEYUP:
           // for now
           break;
         case SDL_DROPFILE:
           if (ev.drop.file!=NULL) {
+            int sampleCountBefore=e->song.sampleLen;
             std::vector<DivInstrument*> instruments=e->instrumentFromFile(ev.drop.file);
             DivWavetable* droppedWave=NULL;
             DivSample* droppedSample=NULL;;
             if (!instruments.empty()) {
+              if (e->song.sampleLen!=sampleCountBefore) {
+                e->renderSamplesP();
+              }
               if (!e->getWarnings().empty()) {
                 showWarning(e->getWarnings(),GUI_WARN_GENERIC);
               }
@@ -3075,11 +3209,25 @@ bool FurnaceGUI::loop() {
 
     // update config x/y/w/h values based on scrMax state
     if (updateWindow) {
+      logV("updateWindow is true");
       if (!scrMax) {
         scrConfX=scrX;
         scrConfY=scrY;
         scrConfW=scrW;
         scrConfH=scrH;
+      }
+    }
+    // update canvas size as well
+    if (SDL_GetRendererOutputSize(sdlRend,&canvasW,&canvasH)!=0) {
+      logW("loop: error while getting output size! %s",SDL_GetError());
+    } else {
+      //logV("updateWindow: canvas size %dx%d",canvasW,canvasH);
+      // and therefore window size
+      int prevScrW=scrW;
+      int prevScrH=scrH;
+      SDL_GetWindowSize(sdlWin,&scrW,&scrH);
+      if (prevScrW!=scrW || prevScrH!=scrH) {
+        logV("size change 2: %dx%d (from %dx%d)",scrW,scrH,prevScrW,prevScrH);
       }
     }
 
@@ -3097,6 +3245,11 @@ bool FurnaceGUI::loop() {
     if (wantCaptureKeyboard) {
       WAKE_UP;
     }
+
+    if (ImGui::GetIO().IsSomethingHappening) {
+      WAKE_UP;
+    }
+
     if (ImGui::GetIO().MouseDown[0] || ImGui::GetIO().MouseDown[1] || ImGui::GetIO().MouseDown[2] || ImGui::GetIO().MouseDown[3] || ImGui::GetIO().MouseDown[4]) {
       WAKE_UP;
     }
@@ -3309,6 +3462,11 @@ bool FurnaceGUI::loop() {
           }
           if (recentFile.empty()) {
             ImGui::Text("nothing here yet");
+          } else {
+            ImGui::Separator();
+            if (ImGui::MenuItem("clear history")) {
+              showWarning("Are you sure you want to clear the recent file list?",GUI_WARN_CLEAR_HISTORY);
+            }
           }
           ImGui::EndMenu();
         }
@@ -3375,6 +3533,14 @@ bool FurnaceGUI::loop() {
               "- pp: pattern index (one per channel)\n\n"
 
               "pattern indexes are ordered as they appear in the song."
+            );
+          }
+          ImGui::Checkbox("direct stream mode",&vgmExportDirectStream);
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+              "required for DualPCM and MSM6258 export.\n\n"
+              "allows for volume/direction changes when playing samples,\n"
+              "at the cost of a massive increase in file size."
             );
           }
           ImGui::Text("chips to export:");
@@ -3446,6 +3612,8 @@ bool FurnaceGUI::loop() {
           if (picked!=DIV_SYSTEM_NULL) {
             if (!e->addSystem(picked)) {
               showError("cannot add chip! ("+e->getLastError()+")");
+            } else {
+              MARK_MODIFIED;
             }
             ImGui::CloseCurrentPopup();
             if (e->song.autoSystem) {
@@ -3471,6 +3639,7 @@ bool FurnaceGUI::loop() {
               DivSystem picked=systemPicker();
               if (picked!=DIV_SYSTEM_NULL) {
                 e->changeSystem(i,picked,preserveChanPos);
+                MARK_MODIFIED;
                 if (e->song.autoSystem) {
                   autoDetectSystem();
                 }
@@ -3488,6 +3657,8 @@ bool FurnaceGUI::loop() {
             if (ImGui::MenuItem(fmt::sprintf("%d. %s##_SYSR%d",i+1,getSystemName(e->song.system[i]),i).c_str())) {
               if (!e->removeSystem(i,preserveChanPos)) {
                 showError("cannot remove chip! ("+e->getLastError()+")");
+              } else {
+                MARK_MODIFIED;
               }
               if (e->song.autoSystem) {
                 autoDetectSystem();
@@ -3516,7 +3687,7 @@ bool FurnaceGUI::loop() {
         editOptions(true);
         ImGui::Separator();
         if (ImGui::MenuItem("clear...")) {
-          showWarning("Are you sure you want to clear... (cannot be undone!)",GUI_WARN_CLEAR);
+          doAction(GUI_ACTION_CLEAR);
         }
         ImGui::EndMenu();
       }
@@ -3577,6 +3748,7 @@ bool FurnaceGUI::loop() {
         if (ImGui::MenuItem("oscilloscope (master)",BIND_FOR(GUI_ACTION_WINDOW_OSCILLOSCOPE),oscOpen)) oscOpen=!oscOpen;
         if (ImGui::MenuItem("oscilloscope (per-channel)",BIND_FOR(GUI_ACTION_WINDOW_CHAN_OSC),chanOscOpen)) chanOscOpen=!chanOscOpen;
         if (ImGui::MenuItem("volume meter",BIND_FOR(GUI_ACTION_WINDOW_VOL_METER),volMeterOpen)) volMeterOpen=!volMeterOpen;
+        if (ImGui::MenuItem("clock",BIND_FOR(GUI_ACTION_WINDOW_CLOCK),clockOpen)) clockOpen=!clockOpen;
         if (ImGui::MenuItem("register view",BIND_FOR(GUI_ACTION_WINDOW_REGISTER_VIEW),regViewOpen)) regViewOpen=!regViewOpen;
         if (ImGui::MenuItem("log viewer",BIND_FOR(GUI_ACTION_WINDOW_LOG),logOpen)) logOpen=!logOpen;
         if (ImGui::MenuItem("statistics",BIND_FOR(GUI_ACTION_WINDOW_STATS),statsOpen)) statsOpen=!statsOpen;
@@ -3587,6 +3759,7 @@ bool FurnaceGUI::loop() {
       if (ImGui::BeginMenu("help")) {
         if (ImGui::MenuItem("effect list",BIND_FOR(GUI_ACTION_WINDOW_EFFECT_LIST),effectListOpen)) effectListOpen=!effectListOpen;
         if (ImGui::MenuItem("debug menu",BIND_FOR(GUI_ACTION_WINDOW_DEBUG))) debugOpen=!debugOpen;
+        if (ImGui::MenuItem("inspector",BIND_FOR(GUI_ACTION_WINDOW_DEBUG))) inspectorOpen=!inspectorOpen;
         if (ImGui::MenuItem("panic",BIND_FOR(GUI_ACTION_PANIC))) e->syncReset();
         if (ImGui::MenuItem("about...",BIND_FOR(GUI_ACTION_WINDOW_ABOUT))) {
           aboutOpen=true;
@@ -3669,7 +3842,6 @@ bool FurnaceGUI::loop() {
       globalWinFlags=ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoBringToFrontOnFocus;
       //globalWinFlags=ImGuiWindowFlags_NoTitleBar;
       // scene handling goes here!
-      pianoOpen=true;
       drawMobileControls();
       switch (mobScene) {
         case GUI_SCENE_ORDERS:
@@ -3695,13 +3867,34 @@ bool FurnaceGUI::loop() {
           drawSampleEdit();
           drawPiano();
           break;
+        case GUI_SCENE_CHANNELS:
+          channelsOpen=true;
+          curWindow=GUI_WINDOW_CHANNELS;
+          drawChannels();
+          break;
+        case GUI_SCENE_CHIPS:
+          sysManagerOpen=true;
+          curWindow=GUI_WINDOW_SYS_MANAGER;
+          drawSysManager();
+          break;
         default:
           patternOpen=true;
           curWindow=GUI_WINDOW_PATTERN;
           drawPattern();
           drawPiano();
+          drawMobileOrderSel();
+
+          globalWinFlags=0;
+          drawFindReplace();
           break;
       }
+
+      globalWinFlags=0;
+      drawSettings();
+      drawDebug();
+      drawLog();
+      drawCompatFlags();
+      drawStats();
     } else {
       globalWinFlags=0;
       ImGui::DockSpaceOverViewport(NULL,lockLayout?(ImGuiDockNodeFlags_NoWindowMenuButton|ImGuiDockNodeFlags_NoMove|ImGuiDockNodeFlags_NoResize|ImGuiDockNodeFlags_NoCloseButton|ImGuiDockNodeFlags_NoDocking|ImGuiDockNodeFlags_NoDockingSplitMe|ImGuiDockNodeFlags_NoDockingSplitOther):0);
@@ -3735,6 +3928,7 @@ bool FurnaceGUI::loop() {
       drawChannels();
       drawPatManager();
       drawSysManager();
+      drawClock();
       drawRegView();
       drawLog();
       drawEffectList();
@@ -3746,10 +3940,10 @@ bool FurnaceGUI::loop() {
       firstFrame=false;
 #ifdef IS_MOBILE
       SDL_GetWindowSize(sdlWin,&scrW,&scrH);
-      scrW/=dpiScale;
-      scrH/=dpiScale;
       portrait=(scrW<scrH);
       logV("portrait: %d (%dx%d)",portrait,scrW,scrH);
+
+      SDL_GetRendererOutputSize(sdlRend,&canvasW,&canvasH);
 #endif
       if (patternOpen) nextWindow=GUI_WINDOW_PATTERN;
 #ifdef __APPLE__
@@ -3767,12 +3961,12 @@ bool FurnaceGUI::loop() {
         ImGui::CloseCurrentPopup();
       }
       ImDrawList* dl=ImGui::GetForegroundDrawList();
-      dl->AddRectFilled(ImVec2(0.0f,0.0f),ImVec2(scrW*dpiScale,scrH*dpiScale),ImGui::ColorConvertFloat4ToU32(uiColors[GUI_COLOR_MODAL_BACKDROP]));
+      dl->AddRectFilled(ImVec2(0.0f,0.0f),ImVec2(canvasW,canvasH),ImGui::ColorConvertFloat4ToU32(uiColors[GUI_COLOR_MODAL_BACKDROP]));
       ImGui::EndPopup();
     }
 #endif
 
-    if (fileDialog->render(ImVec2(600.0f*dpiScale,400.0f*dpiScale),ImVec2(scrW*dpiScale,scrH*dpiScale))) {
+    if (fileDialog->render(mobileUI?ImVec2(canvasW-(portrait?0:(60.0*dpiScale)),canvasH-60.0*dpiScale):ImVec2(600.0f*dpiScale,400.0f*dpiScale),ImVec2(canvasW-((mobileUI && !portrait)?(60.0*dpiScale):0),canvasH-(mobileUI?(60.0*dpiScale):0)))) {
       bool openOpen=false;
       //ImGui::GetIO().ConfigFlags&=~ImGuiConfigFlags_NavEnableKeyboard;
       if ((curFileDialog==GUI_FILE_INS_OPEN || curFileDialog==GUI_FILE_INS_OPEN_REPLACE) && prevIns!=-3) {
@@ -3798,6 +3992,7 @@ bool FurnaceGUI::loop() {
         case GUI_FILE_INS_OPEN:
         case GUI_FILE_INS_OPEN_REPLACE:
         case GUI_FILE_INS_SAVE:
+        case GUI_FILE_INS_SAVE_OLD:
         case GUI_FILE_INS_SAVE_DMP:
           workingDirIns=fileDialog->getPath()+DIR_SEPARATOR_STR;
           break;
@@ -3861,7 +4056,11 @@ bool FurnaceGUI::loop() {
 #if defined(_WIN32) || defined(__APPLE__)
         showError("there was an error in the file dialog! you may want to report this issue to:\nhttps://github.com/tildearrow/furnace/issues\ncheck the Log Viewer (window > log viewer) for more information.\n\nfor now please disable the system file picker in Settings > General.");
 #else
+#ifdef ANDROID
+        showError("can't do anything without Storage permissions!");
+#else
         showError("Zenity/KDialog not available!\nplease install one of these, or disable the system file picker in Settings > General.");
+#endif
 #endif
       }
       if (fileDialog->accepted()) {
@@ -3887,6 +4086,9 @@ bool FurnaceGUI::loop() {
             checkExtension(".wav");
           }
           if (curFileDialog==GUI_FILE_INS_SAVE) {
+            checkExtension(".fui");
+          }
+          if (curFileDialog==GUI_FILE_INS_SAVE_OLD) {
             checkExtension(".fui");
           }
           if (curFileDialog==GUI_FILE_INS_SAVE_DMP) {
@@ -3929,7 +4131,6 @@ bool FurnaceGUI::loop() {
               }
               break;
             case GUI_FILE_SAVE: {
-              logD("saving: %s",copyOfName.c_str());
               bool saveWasSuccessful=true;
               if (save(copyOfName,0)>0) {
                 showError(fmt::sprintf("Error while saving file! (%s)",lastError));
@@ -3980,7 +4181,12 @@ bool FurnaceGUI::loop() {
               break;
             case GUI_FILE_INS_SAVE:
               if (curIns>=0 && curIns<(int)e->song.ins.size()) {
-                e->song.ins[curIns]->save(copyOfName.c_str());
+                e->song.ins[curIns]->save(copyOfName.c_str(),false,&e->song);
+              }
+              break;
+            case GUI_FILE_INS_SAVE_OLD:
+              if (curIns>=0 && curIns<(int)e->song.ins.size()) {
+                e->song.ins[curIns]->save(copyOfName.c_str(),true);
               }
               break;
             case GUI_FILE_INS_SAVE_DMP:
@@ -4006,15 +4212,32 @@ bool FurnaceGUI::loop() {
               }
               break;
             case GUI_FILE_SAMPLE_OPEN: {
-              DivSample* s=e->sampleFromFile(copyOfName.c_str());
-              if (s==NULL) {
-                showError(e->getLastError());
-              } else {
-                if (e->addSamplePtr(s)==-1) {
-                  showError(e->getLastError());
+              String errs="there were some errors while loading wavetables:\n";
+              bool warn=false;
+              for (String i: fileDialog->getFileName()) {
+                DivSample* s=e->sampleFromFile(i.c_str());
+                if (s==NULL) {
+                  if (fileDialog->getFileName().size()>1) {
+                    warn=true;
+                    errs+=fmt::sprintf("- %s: %s\n",i,e->getLastError());
+                  } else {
+                    showError(e->getLastError());
+                  }
                 } else {
-                  MARK_MODIFIED;
+                  if (e->addSamplePtr(s)==-1) {
+                    if (fileDialog->getFileName().size()>1) {
+                      warn=true;
+                      errs+=fmt::sprintf("- %s: %s\n",i,e->getLastError());
+                    } else {
+                      showError(e->getLastError());
+                    }
+                  } else {
+                    MARK_MODIFIED;
+                  }
                 }
+              }
+              if (warn) {
+                showWarning(errs,GUI_WARN_GENERIC);
               }
               break;
             }
@@ -4059,12 +4282,43 @@ bool FurnaceGUI::loop() {
               exportAudio(copyOfName,DIV_EXPORT_MODE_MANY_CHAN);
               break;
             case GUI_FILE_INS_OPEN: {
-              std::vector<DivInstrument*> instruments=e->instrumentFromFile(copyOfName.c_str());
-              if (!instruments.empty()) {
-                if (!e->getWarnings().empty()) {
-                  showWarning(e->getWarnings(),GUI_WARN_GENERIC);
+              std::vector<DivInstrument*> instruments;
+              bool ask=false;
+              bool warn=false;
+              String warns="there were some warnings/errors while loading instruments:\n";
+              int sampleCountBefore=e->song.sampleLen;
+              for (String i: fileDialog->getFileName()) {
+                std::vector<DivInstrument*> insTemp=e->instrumentFromFile(i.c_str());
+                if (insTemp.empty()) {
+                  warn=true;
+                  warns+=fmt::sprintf("> %s: cannot load instrument! (%s)\n",i,e->getLastError());
+                } else if (!e->getWarnings().empty()) {
+                  warn=true;
+                  warns+=fmt::sprintf("> %s:\n%s\n",i,e->getWarnings());
                 }
-                if (instruments.size()>1) { // ask which instruments to load
+                if (insTemp.size()>1) ask=true;
+                for (DivInstrument* j: insTemp) {
+                  instruments.push_back(j);
+                }
+              }
+              if (e->song.sampleLen!=sampleCountBefore) {
+                e->renderSamplesP();
+              }
+              if (warn) {
+                if (instruments.empty()) {
+                  if (fileDialog->getFileName().size()>1) {
+                    showError(warns);
+                  } else {
+                    showError("cannot load instrument! ("+e->getLastError()+")");
+                  }
+                } else {
+                  showWarning(warns,GUI_WARN_GENERIC);
+                }
+              } else if (instruments.empty()) {
+                showError("congratulations! you managed to load nothing.\nyou are entitled to a bug report.");
+              }
+              if (!instruments.empty()) {
+                if (ask) { // ask which instruments to load
                   for (DivInstrument* i: instruments) {
                     pendingIns.push_back(std::make_pair(i,false));
                   }
@@ -4075,14 +4329,16 @@ bool FurnaceGUI::loop() {
                     e->addInstrumentPtr(i);
                   }
                 }
-              } else {
-                showError("cannot load instrument! ("+e->getLastError()+")");
               }
               break;
             }
             case GUI_FILE_INS_OPEN_REPLACE: {
+              int sampleCountBefore=e->song.sampleLen;
               std::vector<DivInstrument*> instruments=e->instrumentFromFile(copyOfName.c_str());
               if (!instruments.empty()) {
+                if (e->song.sampleLen!=sampleCountBefore) {
+                  e->renderSamplesP();
+                }
                 if (!e->getWarnings().empty()) {
                   showWarning(e->getWarnings(),GUI_WARN_GENERIC);
                 }
@@ -4108,16 +4364,33 @@ bool FurnaceGUI::loop() {
               break;
             }
             case GUI_FILE_WAVE_OPEN: {
-              DivWavetable* wave=e->waveFromFile(copyOfName.c_str());
-              if (wave==NULL) {
-                showError("cannot load wavetable! ("+e->getLastError()+")");
-              } else {
-                if (e->addWavePtr(wave)==-1) {
-                  showError("cannot load wavetable! ("+e->getLastError()+")");
+              String errs="there were some errors while loading wavetables:\n";
+              bool warn=false;
+              for (String i: fileDialog->getFileName()) {
+                DivWavetable* wave=e->waveFromFile(i.c_str());
+                if (wave==NULL) {
+                  if (fileDialog->getFileName().size()>1) {
+                    warn=true;
+                    errs+=fmt::sprintf("- %s: %s\n",i,e->getLastError());
+                  } else {
+                    showError("cannot load wavetable! ("+e->getLastError()+")");
+                  }
                 } else {
-                  MARK_MODIFIED;
-                  RESET_WAVE_MACRO_ZOOM;
+                  if (e->addWavePtr(wave)==-1) {
+                    if (fileDialog->getFileName().size()>1) {
+                      warn=true;
+                      errs+=fmt::sprintf("- %s: %s\n",i,e->getLastError());
+                    } else {
+                      showError("cannot load wavetable! ("+e->getLastError()+")");
+                    }
+                  } else {
+                    MARK_MODIFIED;
+                    RESET_WAVE_MACRO_ZOOM;
+                  }
                 }
+              }
+              if (warn) {
+                showWarning(errs,GUI_WARN_GENERIC);
               }
               break;
             }
@@ -4139,7 +4412,7 @@ bool FurnaceGUI::loop() {
               break;
             }
             case GUI_FILE_EXPORT_VGM: {
-              SafeWriter* w=e->saveVGM(willExport,vgmExportLoop,vgmExportVersion,vgmExportPatternHints);
+              SafeWriter* w=e->saveVGM(willExport,vgmExportLoop,vgmExportVersion,vgmExportPatternHints,vgmExportDirectStream);
               if (w!=NULL) {
                 FILE* f=ps_fopen(copyOfName.c_str(),"wb");
                 if (f!=NULL) {
@@ -4289,6 +4562,11 @@ bool FurnaceGUI::loop() {
       ImGui::OpenPopup("Import Raw Sample");
     }
 
+    if (displayInsTypeList) {
+      displayInsTypeList=false;
+      ImGui::OpenPopup("InsTypeList");
+    }
+
     if (displayExporting) {
       displayExporting=false;
       ImGui::OpenPopup("Rendering...");
@@ -4318,9 +4596,14 @@ bool FurnaceGUI::loop() {
       ImGui::EndPopup();
     }
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(400.0f*dpiScale,200.0f*dpiScale),ImVec2(scrW*dpiScale,scrH*dpiScale));
+    ImVec2 newSongMinSize=mobileUI?ImVec2(canvasW-(portrait?0:(60.0*dpiScale)),canvasH-60.0*dpiScale):ImVec2(400.0f*dpiScale,200.0f*dpiScale);
+    ImVec2 newSongMaxSize=ImVec2(canvasW-((mobileUI && !portrait)?(60.0*dpiScale):0),canvasH-(mobileUI?(60.0*dpiScale):0));
+    ImGui::SetNextWindowSizeConstraints(newSongMinSize,newSongMaxSize);
     if (ImGui::BeginPopupModal("New Song",NULL,ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollWithMouse|ImGuiWindowFlags_NoScrollbar)) {
-      ImGui::SetWindowPos(ImVec2(((scrW*dpiScale)-ImGui::GetWindowSize().x)*0.5,((scrH*dpiScale)-ImGui::GetWindowSize().y)*0.5));
+      ImGui::SetWindowPos(ImVec2(((canvasW)-ImGui::GetWindowSize().x)*0.5,((canvasH)-ImGui::GetWindowSize().y)*0.5));
+      if (ImGui::GetWindowSize().x<newSongMinSize.x || ImGui::GetWindowSize().y<newSongMinSize.y) {
+        ImGui::SetWindowSize(newSongMinSize,ImGuiCond_Always);
+      }
       drawNewSong();
       ImGui::EndPopup();
     }
@@ -4546,7 +4829,7 @@ bool FurnaceGUI::loop() {
           if (ImGui::Button("Orders")) {
             stop();
             e->lockEngine([this]() {
-              memset(e->curOrders->ord,0,DIV_MAX_CHANS*256);
+              memset(e->curOrders->ord,0,DIV_MAX_CHANS*DIV_MAX_PATTERNS);
               e->curSubSong->ordersLen=1;
             });
             e->setOrder(0);
@@ -4562,8 +4845,8 @@ bool FurnaceGUI::loop() {
             e->lockEngine([this]() {
               for (int i=0; i<e->getTotalChannelCount(); i++) {
                 DivPattern* pat=e->curPat[i].getPattern(e->curOrders->ord[i][curOrder],true);
-                memset(pat->data,-1,256*32*sizeof(short));
-                for (int j=0; j<256; j++) {
+                memset(pat->data,-1,DIV_MAX_ROWS*DIV_MAX_COLS*sizeof(short));
+                for (int j=0; j<DIV_MAX_ROWS; j++) {
                   pat->data[j][0]=0;
                   pat->data[j][1]=0;
                 }
@@ -4636,7 +4919,18 @@ bool FurnaceGUI::loop() {
             if (e->song.autoSystem) {
               autoDetectSystem();
               updateWindowTitle();
+              MARK_MODIFIED;
             }
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("No")) {
+            ImGui::CloseCurrentPopup();
+          }
+          break;
+        case GUI_WARN_CLEAR_HISTORY:
+          if (ImGui::Button("Yes")) {
+            recentFile.clear();
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
@@ -4653,13 +4947,37 @@ bool FurnaceGUI::loop() {
           if (ImGui::Button("No")) {
               setProjectSync(false);
               ImGui::CloseCurrentPopup();
-          }
-          break;
+          }          break;
         case GUI_WARN_GENERIC:
           if (ImGui::Button("OK")) {
             ImGui::CloseCurrentPopup();
           }
           break;
+      }
+      ImGui::EndPopup();
+    }
+
+    if (ImGui::BeginPopup("InsTypeList",ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoSavedSettings)) {
+      char temp[1024];
+      for (DivInstrumentType& i: makeInsTypeList) {
+        strncpy(temp,insTypes[i],1023);
+        if (ImGui::MenuItem(temp)) {
+          // create ins
+          curIns=e->addInstrument(-1,i);
+          if (curIns==-1) {
+            showError("too many instruments!");
+          } else {
+            if (displayInsTypeListMakeInsSample>=0 && displayInsTypeListMakeInsSample<(int)e->song.sample.size()) {
+              e->song.ins[curIns]->type=i;
+              e->song.ins[curIns]->name=e->song.sample[displayInsTypeListMakeInsSample]->name;
+              e->song.ins[curIns]->amiga.initSample=displayInsTypeListMakeInsSample;
+              if (i!=DIV_INS_AMIGA) e->song.ins[curIns]->amiga.useSample=true;
+              nextWindow=GUI_WINDOW_INS_EDIT;
+              wavePreviewInit=true;
+            }
+            MARK_MODIFIED;
+          }
+        }
       }
       ImGui::EndPopup();
     }
@@ -4688,8 +5006,8 @@ bool FurnaceGUI::loop() {
       }
       bool anySelected=false;
       float sizeY=ImGui::GetFrameHeightWithSpacing()*pendingIns.size();
-      if (sizeY>(scrH-180.0)*dpiScale) {
-        sizeY=(scrH-180.0)*dpiScale;
+      if (sizeY>(canvasH-180.0*dpiScale)) {
+        sizeY=canvasH-180.0*dpiScale;
         if (sizeY<60.0*dpiScale) sizeY=60.0*dpiScale;
       }
       if (ImGui::BeginTable("PendingInsList",1,ImGuiTableFlags_ScrollY,ImVec2(0.0f,sizeY))) {
@@ -4771,8 +5089,12 @@ bool FurnaceGUI::loop() {
       ImGui::Checkbox("Big endian",&pendingRawSampleBigEndian);
       ImGui::EndDisabled();
 
+      ImGui::BeginDisabled(pendingRawSampleDepth==DIV_SAMPLE_DEPTH_16BIT);
+      ImGui::Checkbox("Swap nibbles",&pendingRawSampleSwapNibbles);
+      ImGui::EndDisabled();
+
       if (ImGui::Button("OK")) {
-        DivSample* s=e->sampleFromFileRaw(pendingRawSample.c_str(),(DivSampleDepth)pendingRawSampleDepth,pendingRawSampleChannels,pendingRawSampleBigEndian,pendingRawSampleUnsigned);
+        DivSample* s=e->sampleFromFileRaw(pendingRawSample.c_str(),(DivSampleDepth)pendingRawSampleDepth,pendingRawSampleChannels,pendingRawSampleBigEndian,pendingRawSampleUnsigned,pendingRawSampleSwapNibbles);
         if (s==NULL) {
           showError(e->getLastError());
         } else {
@@ -4805,6 +5127,7 @@ bool FurnaceGUI::loop() {
             }
             logD("saving backup...");
             SafeWriter* w=e->saveFur(true);
+            logV("writing file...");
 
             if (w!=NULL) {
 #ifndef VSTTARGET
@@ -4823,14 +5146,17 @@ bool FurnaceGUI::loop() {
                 saveFurnaceBlob(w->getFinalBuf(), w->size());
 #endif
             }
+            logD("backup saved.");
+            backupTimer=30.0;
 #ifdef VSTTARGET
-            backupTimer=1.0;
-#endif
+            backupTimer=1.0;#endif
             return true;
           });
         }
       }
     }
+    
+    curWindowThreadSafe=curWindow;
 
     SDL_SetRenderDrawColor(sdlRend,uiColors[GUI_COLOR_BACKGROUND].x*255,
                                    uiColors[GUI_COLOR_BACKGROUND].y*255,
@@ -4874,9 +5200,7 @@ bool FurnaceGUI::loop() {
 }
 
 bool FurnaceGUI::init() {
-#ifndef __APPLE__
-  float dpiScaleF;
-#endif
+  logI("initializing GUI.");
 
   String homeDir=getHomeDir();
   workingDir=e->getConfString("lastDir",homeDir);
@@ -4911,11 +5235,16 @@ bool FurnaceGUI::init() {
   volMeterOpen=e->getConfBool("volMeterOpen",true);
   statsOpen=e->getConfBool("statsOpen",false);
   compatFlagsOpen=e->getConfBool("compatFlagsOpen",false);
+#ifdef IS_MOBILE
+  pianoOpen=e->getConfBool("pianoOpen",true);
+#else
   pianoOpen=e->getConfBool("pianoOpen",false);
+#endif
   notesOpen=e->getConfBool("notesOpen",false);
   channelsOpen=e->getConfBool("channelsOpen",false);
   patManagerOpen=e->getConfBool("patManagerOpen",false);
   sysManagerOpen=e->getConfBool("sysManagerOpen",false);
+  clockOpen=e->getConfBool("clockOpen",false);
   regViewOpen=e->getConfBool("regViewOpen",false);
   logOpen=e->getConfBool("logOpen",false);
   effectListOpen=e->getConfBool("effectListOpen",false);
@@ -4939,6 +5268,10 @@ bool FurnaceGUI::init() {
   followOrders=e->getConfBool("followOrders",true);
   followPattern=e->getConfBool("followPattern",true);
   noteInputPoly=e->getConfBool("noteInputPoly",true);
+  exportLoops=e->getConfInt("exportLoops",0);
+  if (exportLoops<0) exportLoops=0;
+  exportFadeOut=e->getConfDouble("exportFadeOut",0.0);
+  if (exportFadeOut<0.0) exportFadeOut=0.0;
   orderEditMode=e->getConfInt("orderEditMode",0);
   if (orderEditMode<0) orderEditMode=0;
   if (orderEditMode>3) orderEditMode=3;
@@ -4973,6 +5306,11 @@ bool FurnaceGUI::init() {
 
   syncSettings();
 
+  if (!settings.persistFadeOut) {
+    exportLoops=settings.exportLoops;
+    exportFadeOut=settings.exportFadeOut;
+  }
+
   for (int i=0; i<settings.maxRecentFile; i++) {
     String r=e->getConfString(fmt::sprintf("recentFile%d",i),"");
     if (!r.empty()) {
@@ -4980,15 +5318,49 @@ bool FurnaceGUI::init() {
     }
   }
 
-  if (settings.dpiScale>=0.5f) {
-    dpiScale=settings.dpiScale;
-  }
-
   initSystemPresets();
 
   e->setAutoNotePoly(noteInputPoly);
 
+  SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER,"1");
+  SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
+  SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");
+  // don't disable compositing on KWin
+#if SDL_VERSION_ATLEAST(2,0,22)
+  logV("setting window type to NORMAL.");
+  SDL_SetHint(SDL_HINT_X11_WINDOW_TYPE,"_NET_WM_WINDOW_TYPE_NORMAL");
+#endif
+
+  // initialize SDL
+  SDL_Init(SDL_INIT_VIDEO|SDL_INIT_HAPTIC);
+
+  const char* videoBackend=SDL_GetCurrentVideoDriver();
+  if (videoBackend!=NULL) {
+    logV("video backend: %s",videoBackend);
+    if (strcmp(videoBackend,"wayland")==0 ||
+        strcmp(videoBackend,"cocoa")==0 ||
+        strcmp(videoBackend,"uikit")==0) {
+      sysManagedScale=true;
+      logV("scaling managed by system.");
+    } else {
+      logV("scaling managed by application.");
+    }
+  } else {
+    logV("could not get video backend name!");
+  }
+
+  // get scale factor
+  if (settings.dpiScale>=0.5f) {
+    logD("setting UI scale factor from config (%f).",settings.dpiScale);
+    dpiScale=settings.dpiScale;
+  } else {
+    logD("auto-detecting UI scale factor.");
+    dpiScale=getScaleFactor(videoBackend);
+    logD("scale factor: %f",dpiScale);
+  }
+
 #if !(defined(__APPLE__) || defined(_WIN32))
+  // get the icon (on macOS and Windows the icon is bundled with the app)
   unsigned char* furIcon=getFurnaceIcon();
   SDL_Surface* icon=SDL_CreateRGBSurfaceFrom(furIcon,256,256,32,256*4,0xff,0xff00,0xff0000,0xff000000);
 #endif
@@ -5008,19 +5380,25 @@ bool FurnaceGUI::init() {
   portrait=(scrW<scrH);
   logV("portrait: %d (%dx%d)",portrait,scrW,scrH);
 
-#if !defined(__APPLE__) && !defined(IS_MOBILE)
+  // if old config, scale size as it was stored unscaled before
+  if (e->getConfInt("configVersion",0)<122 && !sysManagedScale) {
+    logD("scaling window size to scale factor because configVersion is not present.");
+    scrW*=dpiScale;
+    scrH*=dpiScale;
+  }
+
+  // predict the canvas size
+  if (sysManagedScale) {
+    canvasW=scrW*dpiScale;
+    canvasH=scrH*dpiScale;
+  } else {
+    canvasW=scrW;
+    canvasH=scrH;
+  }
+
+#ifndef IS_MOBILE
   SDL_Rect displaySize;
 #endif
-
-  SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER,"1");
-  SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS,"0");
-  SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS,"0");
-  // don't disable compositing on KWin
-#if SDL_VERSION_ATLEAST(2,0,22)
-  SDL_SetHint(SDL_HINT_X11_WINDOW_TYPE,"_NET_WM_WINDOW_TYPE_NORMAL");
-#endif
-
-  SDL_Init(SDL_INIT_VIDEO);
 
 #ifndef IS_MOBILE
   // if window would spawn out of bounds, force it to be get default position
@@ -5034,47 +5412,42 @@ bool FurnaceGUI::init() {
 #ifdef VSTTARGET
   addFlags = SDL_WINDOW_HIDDEN;
 #endif
-  sdlWin=SDL_CreateWindow("Furnace",scrX,scrY,scrW*dpiScale,scrH*dpiScale,SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI|(scrMax?SDL_WINDOW_MAXIMIZED:0)|(fullScreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0) | addFlags);
+  sdlWin=SDL_CreateWindow("Furnace",scrX,scrY,scrW,scrH,SDL_WINDOW_RESIZABLE|SDL_WINDOW_ALLOW_HIGHDPI|(scrMax?SDL_WINDOW_MAXIMIZED:0)|(fullScreen?SDL_WINDOW_FULLSCREEN_DESKTOP:0) | addFlags);
   HandOverSDLWindow(sdlWin);
   if (sdlWin==NULL) {
-    logE("could not open window! %s",SDL_GetError());
+    lastError=fmt::sprintf("could not open window! %s",SDL_GetError());
     return false;
   }
 
-#ifndef __APPLE__
-  if (settings.dpiScale<0.5f) {
-    // TODO: replace with a function to actually detect the display scaling factor as it's unreliable.
-    SDL_GetDisplayDPI(SDL_GetWindowDisplayIndex(sdlWin),&dpiScaleF,NULL,NULL);
-    dpiScale=round(dpiScaleF/96.0f);
-    if (dpiScale<1) dpiScale=1;
 #ifndef IS_MOBILE
-    if (dpiScale!=1) {
-      if (!fullScreen) {
-        SDL_SetWindowSize(sdlWin,scrW*dpiScale,scrH*dpiScale);
-      }
+  if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(sdlWin),&displaySize)==0) {
+    bool mustChange=false;
+    if (scrW>((displaySize.w)-48) && scrH>((displaySize.h)-64)) {
+      // maximize
+      SDL_MaximizeWindow(sdlWin);
+      logD("maximizing as it doesn't fit (%dx%d+%d+%d).",displaySize.w,displaySize.h,displaySize.x,displaySize.y);
     }
-
-    if (SDL_GetDisplayUsableBounds(SDL_GetWindowDisplayIndex(sdlWin),&displaySize)==0) {
-      if (scrW>((displaySize.w/dpiScale)-48) && scrH>((displaySize.h/dpiScale)-64)) {
-        // maximize
-        SDL_MaximizeWindow(sdlWin);
-      }
-      if (scrW>displaySize.w/dpiScale) scrW=(displaySize.w/dpiScale)-32;
-      if (scrH>displaySize.h/dpiScale) scrH=(displaySize.h/dpiScale)-32;
+    if (scrW>displaySize.w) {
+      scrW=(displaySize.w)-32;
+      mustChange=true;
+    }
+    if (scrH>displaySize.h) {
+      scrH=(displaySize.h)-32;
+      mustChange=true;
+    }
+    if (mustChange) {
       portrait=(scrW<scrH);
       logV("portrait: %d (%dx%d)",portrait,scrW,scrH);
       if (!fullScreen) {
-        SDL_SetWindowSize(sdlWin,scrW*dpiScale,scrH*dpiScale);
+        logD("setting window size to %dx%d as it goes off bounds (%dx%d+%d+%d).",scrW,scrH,displaySize.w,displaySize.h,displaySize.x,displaySize.y);
+        SDL_SetWindowSize(sdlWin,scrW,scrH);
       }
     }
-#endif
   }
 #endif
 
 #ifdef IS_MOBILE
   SDL_GetWindowSize(sdlWin,&scrW,&scrH);
-  scrW/=dpiScale;
-  scrH/=dpiScale;
   portrait=(scrW<scrH);
   logV("portrait: %d (%dx%d)",portrait,scrW,scrH);
 #endif
@@ -5092,13 +5465,23 @@ bool FurnaceGUI::init() {
   sdlRend=SDL_CreateRenderer(sdlWin,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC|SDL_RENDERER_TARGETTEXTURE);
 
   if (sdlRend==NULL) {
-    logE("could not init renderer! %s",SDL_GetError());
+    lastError=fmt::sprintf("could not init renderer! %s",SDL_GetError());
     return false;
   }
 
-#ifdef __APPLE__
-  dpiScale=getMacDPIScale();
-#endif
+  // try acquiring the canvas size
+  if (SDL_GetRendererOutputSize(sdlRend,&canvasW,&canvasH)!=0) {
+    logW("could not get renderer output size! %s",SDL_GetError());
+  } else {
+    logV("canvas size: %dx%d",canvasW,canvasH);
+  }
+
+  // special consideration for Wayland
+  if (settings.dpiScale<0.5f) {
+    if (strcmp(videoBackend,"wayland")==0) {
+      dpiScale=(double)canvasW/(double)scrW;
+    }
+  }
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -5146,21 +5529,54 @@ bool FurnaceGUI::init() {
     if (!midiMap.noteInput) return -2;
     if (learning!=-1) return -2;
     if (midiMap.at(msg)) return -2;
+
+    if (curWindowThreadSafe==GUI_WINDOW_WAVE_EDIT || curWindowThreadSafe==GUI_WINDOW_WAVE_LIST) {
+      if ((msg.type&0xf0)==TA_MIDI_NOTE_ON) {
+        e->previewWaveNoLock(curWave,msg.data[0]-12);
+        wavePreviewNote=msg.data[0]-12;
+      } else if ((msg.type&0xf0)==TA_MIDI_NOTE_OFF) {
+        if (wavePreviewNote==msg.data[0]-12) {
+          e->stopWavePreviewNoLock();
+        }
+      }
+      return -2;
+    }
+
+    if (curWindowThreadSafe==GUI_WINDOW_SAMPLE_EDIT || curWindowThreadSafe==GUI_WINDOW_SAMPLE_LIST) {
+      if ((msg.type&0xf0)==TA_MIDI_NOTE_ON) {
+        e->previewSampleNoLock(curSample,msg.data[0]-12);
+        samplePreviewNote=msg.data[0]-12;
+      } else if ((msg.type&0xf0)==TA_MIDI_NOTE_OFF) {
+        if (samplePreviewNote==msg.data[0]-12) {
+          e->stopSamplePreviewNoLock();
+        }
+      }
+      return -2;
+    }
+
     return curIns;
   });
+
+  vibrator=SDL_HapticOpen(0);
+  if (vibrator==NULL) {
+    logD("could not open vibration device: %s",SDL_GetError());
+  } else {
+    if (SDL_HapticRumbleInit(vibrator)==0) {
+      vibratorAvailable=true;
+    } else {
+      logD("vibration not available: %s",SDL_GetError());
+    }
+  }
 
   return true;
 }
 
-bool FurnaceGUI::finish() {
+void FurnaceGUI::commitState() {
   if (!mobileUI) {
     ImGui::SaveIniSettingsToDisk(finalLayoutPath);
   }
-  ImGui_ImplSDLRenderer_Shutdown();
-  ImGui_ImplSDL2_Shutdown();
-  ImGui::DestroyContext();
-  SDL_DestroyRenderer(sdlRend);
-  SDL_DestroyWindow(sdlWin);
+
+  e->setConf("configVersion",(int)DIV_ENGINE_VERSION);
 
   e->setConf("lastDir",workingDir);
   e->setConf("lastDirSong",workingDirSong);
@@ -5200,6 +5616,7 @@ bool FurnaceGUI::finish() {
   e->setConf("channelsOpen",channelsOpen);
   e->setConf("patManagerOpen",patManagerOpen);
   e->setConf("sysManagerOpen",sysManagerOpen);
+  e->setConf("clockOpen",clockOpen);
   e->setConf("regViewOpen",regViewOpen);
   e->setConf("logOpen",logOpen);
   e->setConf("effectListOpen",effectListOpen);
@@ -5227,6 +5644,10 @@ bool FurnaceGUI::finish() {
   e->setConf("followPattern",followPattern);
   e->setConf("orderEditMode",orderEditMode);
   e->setConf("noteInputPoly",noteInputPoly);
+  if (settings.persistFadeOut) {
+    e->setConf("exportLoops",exportLoops);
+    e->setConf("exportFadeOut",exportFadeOut);
+  }
 
   // commit oscilloscope state
   e->setConf("oscZoom",oscZoom);
@@ -5267,6 +5688,19 @@ bool FurnaceGUI::finish() {
       e->setConf(key,recentFile[i]);
     }
   }
+}
+
+bool FurnaceGUI::finish() {
+  commitState();
+  ImGui_ImplSDLRenderer_Shutdown();
+  ImGui_ImplSDL2_Shutdown();
+  ImGui::DestroyContext();
+  SDL_DestroyRenderer(sdlRend);
+  SDL_DestroyWindow(sdlWin);
+
+  if (vibrator) {
+    SDL_HapticClose(vibrator);
+  }
 
   for (int i=0; i<DIV_MAX_CHANS; i++) {
     delete oldPat[i];
@@ -5283,6 +5717,8 @@ FurnaceGUI::FurnaceGUI():
   e(NULL),
   sdlWin(NULL),
   sdlRend(NULL),
+  vibrator(NULL),
+  vibratorAvailable(false),
   sampleTex(NULL),
   sampleTexW(0),
   sampleTexH(0),
@@ -5297,7 +5733,10 @@ FurnaceGUI::FurnaceGUI():
   vgmExportLoop(true),
   zsmExportLoop(true),
   vgmExportPatternHints(false),
+  vgmExportDirectStream(false),
+  displayInsTypeList(false),
   portrait(false),
+  injectBackUp(false),
   mobileMenuOpen(false),
   wantCaptureKeyboard(false),
   oldWantCaptureKeyboard(false),
@@ -5310,18 +5749,26 @@ FurnaceGUI::FurnaceGUI():
   displayPendingIns(false),
   pendingInsSingle(false),
   displayPendingRawSample(false),
+  snesFilterHex(false),
+  mobileEdit(false),
   vgmExportVersion(0x171),
   drawHalt(10),
   zsmExportTickRate(60),
   macroPointSize(16),
   waveEditStyle(0),
+  displayInsTypeListMakeInsSample(-1),
+  mobileEditPage(0),
   mobileMenuPos(0.0f),
   autoButtonSize(0.0f),
+  mobileEditAnim(0.0f),
+  mobileEditButtonPos(0.7f,0.7f),
+  mobileEditButtonSize(60.0f,60.0f),
   curSysSection(NULL),
   pendingRawSampleDepth(8),
   pendingRawSampleChannels(1),
   pendingRawSampleUnsigned(false),
   pendingRawSampleBigEndian(false),
+  pendingRawSampleSwapNibbles(false),
   globalWinFlags(0),
   curFileDialog(GUI_FILE_OPEN),
   warnAction(GUI_WARN_OPEN),
@@ -5332,11 +5779,14 @@ FurnaceGUI::FurnaceGUI():
   scrH(800),
   scrConfW(1280),
   scrConfH(800),
+  canvasW(1280),
+  canvasH(800),
   scrX(SDL_WINDOWPOS_CENTERED),
   scrY(SDL_WINDOWPOS_CENTERED),
   scrConfX(SDL_WINDOWPOS_CENTERED),
   scrConfY(SDL_WINDOWPOS_CENTERED),
   scrMax(false),
+  sysManagedScale(false),
   dpiScale(1),
   aboutScroll(0),
   aboutSin(0),
@@ -5382,6 +5832,8 @@ FurnaceGUI::FurnaceGUI():
   dragSourceY(0),
   dragDestinationX(0),
   dragDestinationY(0),
+  oldBeat(-1),
+  oldBar(-1),
   exportFadeOut(5.0),
   editControlsOpen(true),
   ordersOpen(true),
@@ -5414,6 +5866,12 @@ FurnaceGUI::FurnaceGUI():
   spoilerOpen(false),
   patManagerOpen(false),
   sysManagerOpen(false),
+  clockOpen(false),
+  clockShowReal(true),
+  clockShowRow(true),
+  clockShowBeat(true),
+  clockShowMetro(true),
+  clockShowTime(true),
   selecting(false),
   selectingFull(false),
   dragging(false),
@@ -5437,10 +5895,17 @@ FurnaceGUI::FurnaceGUI():
   latchNibble(false),
   nonLatchNibble(false),
   keepLoopAlive(false),
+  orderScrollLocked(false),
+  orderScrollTolerance(false),
+  dragMobileMenu(false),
+  dragMobileEditButton(false),
   curWindow(GUI_WINDOW_NOTHING),
   nextWindow(GUI_WINDOW_NOTHING),
   curWindowLast(GUI_WINDOW_NOTHING),
-  nextDesc(NULL),
+  curWindowThreadSafe(GUI_WINDOW_NOTHING),
+  lastPatternWidth(0.0f),
+  longThreshold(0.48f),
+  buttonLongThreshold(0.20f),
   latchNote(-1),
   latchIns(-2),
   latchVol(-1),
@@ -5524,6 +5989,10 @@ FurnaceGUI::FurnaceGUI():
   bindSetPending(false),
   nextScroll(-1.0f),
   nextAddScroll(0.0f),
+  orderScroll(0.0f),
+  orderScrollSlideOrigin(0.0f),
+  orderScrollRealOrigin(0.0f,0.0f),
+  dragMobileMenuOrigin(0.0f,0.0f),
   layoutTimeBegin(0),
   layoutTimeEnd(0),
   layoutTimeDelta(0),
@@ -5550,6 +6019,7 @@ FurnaceGUI::FurnaceGUI():
   oldOrdersLen(0),
   sampleZoom(1.0),
   prevSampleZoom(1.0),
+  minSampleZoom(1.0),
   samplePos(0),
   resizeSize(1024),
   silenceSize(1024),
@@ -5558,6 +6028,8 @@ FurnaceGUI::FurnaceGUI():
   amplifyVol(100.0),
   sampleSelStart(-1),
   sampleSelEnd(-1),
+  sampleInfo(true),
+  sampleCompatRate(false),
   sampleDragActive(false),
   sampleDragMode(false),
   sampleDrag16(false),
@@ -5604,8 +6076,8 @@ FurnaceGUI::FurnaceGUI():
   pianoOptionsSet(false),
   pianoOffset(6),
   pianoOffsetEdit(9),
-  pianoView(2),
-  pianoInputPadMode(2),
+  pianoView(PIANO_LAYOUT_AUTOMATIC),
+  pianoInputPadMode(PIANO_INPUT_PAD_SPLIT_AUTO),
 #else
   pianoOctaves(7),
   pianoOctavesEdit(4),
@@ -5613,11 +6085,12 @@ FurnaceGUI::FurnaceGUI():
   pianoSharePosition(true),
   pianoOffset(6),
   pianoOffsetEdit(6),
-  pianoView(0),
-  pianoInputPadMode(0),
+  pianoView(PIANO_LAYOUT_STANDARD),
+  pianoInputPadMode(PIANO_INPUT_PAD_DISABLE),
 #endif
   hasACED(false),
   waveGenBaseShape(0),
+  waveInterpolation(0),
   waveGenDuty(0.5f),
   waveGenPower(1),
   waveGenInvertPoint(1.0f),
@@ -5656,7 +6129,7 @@ FurnaceGUI::FurnaceGUI():
   valueKeys[SDLK_KP_8]=8;
   valueKeys[SDLK_KP_9]=9;
 
-  memset(willExport,1,32*sizeof(bool));
+  memset(willExport,1,DIV_MAX_CHIPS*sizeof(bool));
 
   peak[0]=0;
   peak[1]=0;

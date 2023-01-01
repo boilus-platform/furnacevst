@@ -19,7 +19,13 @@
 
 #include "utfutils.h"
 
+typedef HRESULT (*SPDA)(int);
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prevInst, PSTR args, int state) {
+  if (AttachConsole(ATTACH_PARENT_PROCESS)==0) {
+    if (GetLastError()==ERROR_ACCESS_DENIED) FreeConsole();
+  }
+
   int argc=0;
   wchar_t** argw=CommandLineToArgvW(GetCommandLineW(),&argc);
   char** argv=new char*[argc+1];
@@ -29,5 +35,21 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prevInst, PSTR args, int state) {
     argv[i]=new char[str.size()+1];
     strcpy(argv[i],str.c_str());
   }
+
+  // set DPI awareness
+  HMODULE shcore=LoadLibraryW(L"shcore.dll");
+  if (shcore!=NULL) {
+    SPDA ta_SetProcessDpiAwareness=(SPDA)GetProcAddress(shcore,"SetProcessDpiAwareness");
+    if (ta_SetProcessDpiAwareness!=NULL) {
+      HRESULT result=ta_SetProcessDpiAwareness(2);
+      if (result!=S_OK) {
+        // ???
+      }
+    }
+    if (!FreeLibrary(shcore)) {
+      // ???
+    }
+  }
+  
   return main(argc,argv);
 }

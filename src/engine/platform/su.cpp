@@ -76,7 +76,9 @@ void DivPlatformSoundUnit::tick(bool sysTick) {
       }
       chWrite(i,0x02,chan[i].outVol);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_SU(i,parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -134,7 +136,7 @@ void DivPlatformSoundUnit::tick(bool sysTick) {
     }
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
       //DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].switchRoles,2,chan[i].pitch2,chipClock,chan[i].switchRoles?CHIP_DIVIDER:CHIP_FREQBASE);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,chan[i].switchRoles,2,chan[i].pitch2,chipClock,chan[i].switchRoles?CHIP_DIVIDER:CHIP_FREQBASE);
       if (chan[i].pcm) {
         DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_SU);
         // TODO: sample map?
@@ -398,7 +400,7 @@ int DivPlatformSoundUnit::dispatch(DivCommand c) {
       chan[c.chan].keyOn=true;
       break;
     case DIV_CMD_LEGATO:
-      chan[c.chan].baseFreq=NOTE_SU(c.chan,c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val):(0)));
+      chan[c.chan].baseFreq=NOTE_SU(c.chan,c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -406,11 +408,17 @@ int DivPlatformSoundUnit::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_SU));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_SU(c.chan,chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_SU(c.chan,chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_GET_VOLMAX:
       return 127;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -511,6 +519,7 @@ void DivPlatformSoundUnit::setFlags(const DivConfig& flags) {
   } else {
     chipClock=1236000;
   }
+  CHECK_CUSTOM_CLOCK;
   rate=chipClock/4;
   for (int i=0; i<8; i++) {
     oscBuf[i]->rate=rate;
@@ -518,13 +527,13 @@ void DivPlatformSoundUnit::setFlags(const DivConfig& flags) {
   bool echoOn=flags.getBool("echo",false);
   initIlCtrl=3|(echoOn?4:0);
   initIlSize=((flags.getInt("echoDelay",0))&63)|(echoOn?0x40:0)|(flags.getBool("swapEcho",false)?0x80:0);
-  initFil1=flags.getInt("echoFeedback",0);
+  initFil1=flags.getInt("echoFeedback",0)|(flags.getInt("echoResolution",0)<<4);
   initEchoVol=flags.getInt("echoVol",0);
 
   sampleMemSize=flags.getInt("sampleMemSize",0);
 
   su->Init(sampleMemSize?65536:8192,flags.getBool("pdm",false));
-  renderSamples();
+  renderSamples(sysIDCache);
 }
 
 void DivPlatformSoundUnit::poke(unsigned int addr, unsigned short val) {
@@ -547,14 +556,26 @@ size_t DivPlatformSoundUnit::getSampleMemUsage(int index) {
   return (index==0)?sampleMemLen:0;
 }
 
-void DivPlatformSoundUnit::renderSamples() {
+bool DivPlatformSoundUnit::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>255) return false;
+  return sampleLoaded[sample];
+}
+
+void DivPlatformSoundUnit::renderSamples(int sysID) {
   memset(su->pcm,0,getSampleMemCapacity(0));
   memset(sampleOffSU,0,256*sizeof(unsigned int));
+  memset(sampleLoaded,0,256*sizeof(bool));
 
   size_t memPos=0;
   for (int i=0; i<parent->song.sampleLen; i++) {
     DivSample* s=parent->song.sample[i];
     if (s->data8==NULL) continue;
+    if (!s->renderOn[0][sysID]) {
+      sampleOffSU[i]=0;
+      continue;
+    }
+    
     int paddedLen=s->length8;
     if (memPos>=getSampleMemCapacity(0)) {
       logW("out of PCM memory for sample %d!",i);
@@ -565,12 +586,13 @@ void DivPlatformSoundUnit::renderSamples() {
       logW("out of PCM memory for sample %d!",i);
     } else {
       memcpy(su->pcm+memPos,s->data8,paddedLen);
+      sampleLoaded[i]=true;
     }
     sampleOffSU[i]=memPos;
     memPos+=paddedLen;
   }
   sampleMemLen=memPos;
-
+  sysIDCache=sysID;
 }
 
 int DivPlatformSoundUnit::init(DivEngine* p, int channels, int sugRate, const DivConfig& flags) {
@@ -582,6 +604,7 @@ int DivPlatformSoundUnit::init(DivEngine* p, int channels, int sugRate, const Di
     oscBuf[i]=new DivDispatchOscBuffer;
   }
   su=new SoundUnit();
+  sysIDCache=0;
   setFlags(flags);
   reset();
   return 8;

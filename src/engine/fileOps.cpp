@@ -174,7 +174,8 @@ bool DivEngine::loadDMF(unsigned char* file, size_t len) {
     ds.noOPN2Vol=true;
     ds.newVolumeScaling=false;
     ds.volMacroLinger=false;
-    ds.brokenOutVol=true; // ???
+    ds.brokenOutVol=true;
+    ds.brokenOutVol2=true;
     ds.e1e2StopOnSameNote=true;
     ds.brokenPortaArp=false;
     ds.snNoLowPeriods=true;
@@ -207,7 +208,9 @@ bool DivEngine::loadDMF(unsigned char* file, size_t len) {
     }*/
 
     // Game Boy arp+soundLen screwery
-    ds.systemFlags[0].set("enoughAlready",true);
+    if (ds.system[0]==DIV_SYSTEM_GB) {
+      ds.systemFlags[0].set("enoughAlready",true);
+    }
 
     logI("reading module data...");
     if (ds.version>0x0c) {
@@ -492,6 +495,19 @@ bool DivEngine::loadDMF(unsigned char* file, size_t len) {
                ins->fm.op[j].d2r,
                ins->fm.op[j].ssgEnv
                );
+        }
+
+        // swap alg operator 2 and 3 if YMU759
+        if (ds.system[0]==DIV_SYSTEM_YMU759 && ins->fm.ops==4) {
+          DivInstrumentFM::Operator oldOp=ins->fm.op[2];
+          ins->fm.op[2]=ins->fm.op[1];
+          ins->fm.op[1]=oldOp;
+
+          if (ins->fm.alg==1) {
+            ins->fm.alg=2;
+          } else if (ins->fm.alg==2) {
+            ins->fm.alg=1;
+          }
         }
       } else { // STD
         if (ds.system[0]!=DIV_SYSTEM_GB || ds.version<0x12) {
@@ -923,13 +939,13 @@ bool DivEngine::loadDMF(unsigned char* file, size_t len) {
       ds.systemLen=2;
       ds.system[0]=DIV_SYSTEM_YM2612;
       ds.system[1]=DIV_SYSTEM_SMS;
-      ds.systemVol[1]=24;
+      ds.systemVol[1]=32;
     }
     if (ds.system[0]==DIV_SYSTEM_GENESIS_EXT) {
       ds.systemLen=2;
       ds.system[0]=DIV_SYSTEM_YM2612_EXT;
       ds.system[1]=DIV_SYSTEM_SMS;
-      ds.systemVol[1]=24;
+      ds.systemVol[1]=32;
     }
     if (ds.system[0]==DIV_SYSTEM_ARCADE) {
       ds.systemLen=2;
@@ -950,6 +966,11 @@ bool DivEngine::loadDMF(unsigned char* file, size_t len) {
       ds.systemLen=2;
       ds.system[0]=DIV_SYSTEM_NES;
       ds.system[1]=DIV_SYSTEM_FDS;
+    }
+
+    // SMS noise freq
+    if (ds.system[0]==DIV_SYSTEM_SMS) {
+      ds.systemFlags[0].set("noEasyNoise",true);
     }
 
     ds.systemName=getSongSystemLegacyName(ds,!getConfInt("noMultiSystem",0));
@@ -1186,8 +1207,8 @@ void DivEngine::convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivS
       break;
     case DIV_SYSTEM_YM2612:
     case DIV_SYSTEM_YM2612_EXT:
-    case DIV_SYSTEM_YM2612_FRAC:
-    case DIV_SYSTEM_YM2612_FRAC_EXT:
+    case DIV_SYSTEM_YM2612_DUALPCM:
+    case DIV_SYSTEM_YM2612_DUALPCM_EXT:
       switch (oldFlags&0x7fffffff) {
         case 0:
           newFlags.set("clockSel",0);
@@ -1274,8 +1295,8 @@ void DivEngine::convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivS
       newFlags.set("channels",(int)((oldFlags>>4)&7));
       if (oldFlags&128) newFlags.set("multiplex",true);
       break;
-    case DIV_SYSTEM_OPN:
-    case DIV_SYSTEM_OPN_EXT:
+    case DIV_SYSTEM_YM2203:
+    case DIV_SYSTEM_YM2203_EXT:
       switch (oldFlags&31) {
         case 0:
           newFlags.set("clockSel",0);
@@ -1308,8 +1329,8 @@ void DivEngine::convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivS
           break;
       }
       break;
-    case DIV_SYSTEM_PC98:
-    case DIV_SYSTEM_PC98_EXT:
+    case DIV_SYSTEM_YM2608:
+    case DIV_SYSTEM_YM2608_EXT:
       switch (oldFlags&31) {
         case 0:
           newFlags.set("clockSel",0);
@@ -1398,7 +1419,7 @@ void DivEngine::convertOldFlags(unsigned int oldFlags, DivConfig& newFlags, DivS
           newFlags.set("chipType",0);
           break;
         case 1:
-          newFlags.set("chipType",0);
+          newFlags.set("chipType",1);
           break;
       }
       break;
@@ -1560,7 +1581,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
   unsigned int wavePtr[256];
   unsigned int samplePtr[256];
   unsigned int subSongPtr[256];
-  unsigned int sysFlagsPtr[32];
+  unsigned int sysFlagsPtr[DIV_MAX_CHIPS];
   std::vector<int> patPtr;
   int numberOfSubSongs=0;
   char magic[5];
@@ -1689,6 +1710,12 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
     if (ds.version<117) {
       ds.disableSampleMacro=true;
     }
+    if (ds.version<121) {
+      ds.brokenOutVol2=false;
+    }
+    if (ds.version<130) {
+      ds.oldArpStrategy=true;
+    }
     ds.isDMF=false;
 
     reader.readS(); // reserved
@@ -1736,7 +1763,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
       delete[] file;
       return false;
     }
-    if (subSong->patLen>256) {
+    if (subSong->patLen>DIV_MAX_ROWS) {
       logE("pattern length is too large!");
       lastError="pattern length is too large!";
       delete[] file;
@@ -1748,7 +1775,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
       delete[] file;
       return false;
     }
-    if (subSong->ordersLen>256) {
+    if (subSong->ordersLen>DIV_MAX_PATTERNS) {
       logE("song is too long!");
       lastError="song is too long!";
       delete[] file;
@@ -1780,7 +1807,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
     }
 
     logD("systems:");
-    for (int i=0; i<32; i++) {
+    for (int i=0; i<DIV_MAX_CHIPS; i++) {
       unsigned char sysID=reader.readC();
       ds.system[i]=systemFromFileFur(sysID);
       logD("- %d: %.2x (%s)",i,sysID,getSystemName(ds.system[i]));
@@ -1802,7 +1829,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
     }
 
     // system volume
-    for (int i=0; i<32; i++) {
+    for (int i=0; i<DIV_MAX_CHIPS; i++) {
       ds.systemVol[i]=reader.readC();
       if (ds.version<59 && ds.system[i]==DIV_SYSTEM_NES) {
         ds.systemVol[i]/=4;
@@ -1810,15 +1837,15 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
     }
 
     // system panning
-    for (int i=0; i<32; i++) ds.systemPan[i]=reader.readC();
+    for (int i=0; i<DIV_MAX_CHIPS; i++) ds.systemPan[i]=reader.readC();
 
     // system props
-    for (int i=0; i<32; i++) {
+    for (int i=0; i<DIV_MAX_CHIPS; i++) {
       sysFlagsPtr[i]=reader.readI();
     }
 
     // handle compound systems
-    for (int i=0; i<32; i++) {
+    for (int i=0; i<DIV_MAX_CHIPS; i++) {
       if (ds.system[i]==DIV_SYSTEM_GENESIS ||
           ds.system[i]==DIV_SYSTEM_GENESIS_EXT ||
           ds.system[i]==DIV_SYSTEM_ARCADE) {
@@ -1827,7 +1854,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
           ds.systemVol[j]=ds.systemVol[j-1];
           ds.systemPan[j]=ds.systemPan[j-1];
         }
-        if (++ds.systemLen>32) ds.systemLen=32;
+        if (++ds.systemLen>DIV_MAX_CHIPS) ds.systemLen=DIV_MAX_CHIPS;
 
         if (ds.system[i]==DIV_SYSTEM_GENESIS) {
           ds.system[i]=DIV_SYSTEM_YM2612;
@@ -1976,7 +2003,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
 
     for (int i=0; i<tchans; i++) {
       subSong->pat[i].effectCols=reader.readC();
-      if (subSong->pat[i].effectCols<1 || subSong->pat[i].effectCols>8) {
+      if (subSong->pat[i].effectCols<1 || subSong->pat[i].effectCols>DIV_MAX_EFFECTS) {
         logE("channel %d has zero or too many effect columns! (%d)",i,subSong->pat[i].effectCols);
         lastError=fmt::sprintf("channel %d has too many effect columns! (%d)",i,subSong->pat[i].effectCols);
         delete[] file;
@@ -2126,7 +2153,14 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
       } else {
         reader.readC();
       }
-      for (int i=0; i<2; i++) {
+      if (ds.version>=121) {
+        ds.brokenOutVol2=reader.readC();
+      } else {
+        reader.readC();
+      }
+      if (ds.version>=130) {
+        ds.oldArpStrategy=reader.readC();
+      } else {
         reader.readC();
       }
     }
@@ -2169,7 +2203,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
     // read system flags
     if (ds.version>=119) {
       logD("reading chip flags...");
-      for (int i=0; i<32; i++) {
+      for (int i=0; i<DIV_MAX_CHIPS; i++) {
         if (sysFlagsPtr[i]==0) continue;
 
         if (!reader.seek(sysFlagsPtr[i],SEEK_SET)) {
@@ -2326,136 +2360,23 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
 
     // read samples
     for (int i=0; i<ds.sampleLen; i++) {
-      int vol=0;
-      int pitch=0;
+      DivSample* sample=new DivSample;
 
       if (!reader.seek(samplePtr[i],SEEK_SET)) {
         logE("couldn't seek to sample %d!",i);
         lastError=fmt::sprintf("couldn't seek to sample %d!",i);
         ds.unload();
+        delete sample;
         delete[] file;
         return false;
       }
 
-      reader.read(magic,4);
-      if (strcmp(magic,"SMPL")!=0 && strcmp(magic,"SMP2")!=0) {
-        logE("%d: invalid sample header!",i);
-        lastError="invalid sample header!";
+      if (sample->readSampleData(reader,ds.version)!=DIV_DATA_SUCCESS) {
+        lastError="invalid sample header/data!";
         ds.unload();
+        delete sample;
         delete[] file;
         return false;
-      }
-      bool isNewSample=(strcmp(magic,"SMP2")==0);
-      reader.readI();
-      DivSample* sample=new DivSample;
-      logD("reading sample %d at %x...",i,samplePtr[i]);
-      if (!isNewSample) logV("(old sample)");
-
-      sample->name=reader.readString();
-      sample->samples=reader.readI();
-      if (!isNewSample) {
-        sample->loopEnd=sample->samples;
-      }
-      sample->rate=reader.readI();
-
-      if (isNewSample) {
-        sample->centerRate=reader.readI();
-        sample->depth=(DivSampleDepth)reader.readC();
-
-        // reserved
-        reader.readC();
-        reader.readC();
-        reader.readC();
-
-        sample->loopStart=reader.readI();
-        sample->loopEnd=reader.readI();
-        sample->loop=(sample->loopStart>=0)&&(sample->loopEnd>=0);
-
-        for (int i=0; i<4; i++) {
-          reader.readI();
-        }
-      } else {
-        if (ds.version<58) {
-          vol=reader.readS();
-          pitch=reader.readS();
-        } else {
-          reader.readI();
-        }
-        sample->depth=(DivSampleDepth)reader.readC();
-
-        // reserved
-        reader.readC();
-
-        // while version 32 stored this value, it was unused.
-        if (ds.version>=38) {
-          sample->centerRate=(unsigned short)reader.readS();
-        } else {
-          reader.readS();
-        }
-
-        if (ds.version>=19) {
-          sample->loopStart=reader.readI();
-          sample->loop=(sample->loopStart>=0)&&(sample->loopEnd>=0);
-        } else {
-          reader.readI();
-        }
-      }
-
-      if (ds.version>=58) { // modern sample
-        sample->init(sample->samples);
-        reader.read(sample->getCurBuf(),sample->getCurBufLen());
-#ifdef TA_BIG_ENDIAN
-        // convert 16-bit samples to big-endian
-        if (sample->depth==DIV_SAMPLE_DEPTH_16BIT) {
-          unsigned char* sampleBuf=(unsigned char*)sample->getCurBuf();
-          size_t sampleBufLen=sample->getCurBufLen();
-          for (size_t pos=0; pos<sampleBufLen; pos+=2) {
-            sampleBuf[pos]^=sampleBuf[pos+1];
-            sampleBuf[pos+1]^=sampleBuf[pos];
-            sampleBuf[pos]^=sampleBuf[pos+1];
-          }
-        }
-#endif
-      } else { // legacy sample
-        int length=sample->samples;
-        short* data=new short[length];
-        reader.read(data,2*length);
-
-#ifdef TA_BIG_ENDIAN
-        // convert 16-bit samples to big-endian
-        for (int pos=0; pos<length; pos++) {
-          data[pos]=((unsigned short)data[pos]>>8)|((unsigned short)data[pos]<<8);
-        }
-#endif
-
-        if (pitch!=5) {
-          logD("%d: scaling from %d...",i,pitch);
-        }
-
-        // render data
-        if (sample->depth!=DIV_SAMPLE_DEPTH_8BIT && sample->depth!=DIV_SAMPLE_DEPTH_16BIT) {
-          logW("%d: sample depth is wrong! (%d)",i,sample->depth);
-          sample->depth=DIV_SAMPLE_DEPTH_16BIT;
-        }
-        sample->samples=(double)sample->samples/samplePitches[pitch];
-        sample->init(sample->samples);
-
-        unsigned int k=0;
-        float mult=(float)(vol)/50.0f;
-        for (double j=0; j<length; j+=samplePitches[pitch]) {
-          if (k>=sample->samples) {
-            break;
-          }
-          if (sample->depth==DIV_SAMPLE_DEPTH_8BIT) {
-            float next=(float)(data[(unsigned int)j]-0x80)*mult;
-            sample->data8[k++]=fmin(fmax(next,-128),127);
-          } else {
-            float next=(float)data[(unsigned int)j]*mult;
-            sample->data16[k++]=fmin(fmax(next,-32768),32767);
-          }
-        }
-
-        delete[] data;
       }
 
       ds.sample.push_back(sample);
@@ -2500,7 +2421,7 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
         delete[] file;
         return false;
       }
-      if (index<0 || index>255) {
+      if (index<0 || index>(DIV_MAX_PATTERNS-1)) {
         logE("pattern index out of range!",i);
         lastError="pattern index out of range!";
         ds.unload();
@@ -2563,14 +2484,14 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
           case DIV_SYSTEM_YM2610_FULL_EXT:
           case DIV_SYSTEM_YM2610B:
           case DIV_SYSTEM_YM2610B_EXT:
-          case DIV_SYSTEM_OPN:
-          case DIV_SYSTEM_OPN_EXT:
-          case DIV_SYSTEM_PC98:
-          case DIV_SYSTEM_PC98_EXT:
+          case DIV_SYSTEM_YM2203:
+          case DIV_SYSTEM_YM2203_EXT:
+          case DIV_SYSTEM_YM2608:
+          case DIV_SYSTEM_YM2608_EXT:
           case DIV_SYSTEM_YM2612:
           case DIV_SYSTEM_YM2612_EXT:
-          case DIV_SYSTEM_YM2612_FRAC:
-          case DIV_SYSTEM_YM2612_FRAC_EXT:
+          case DIV_SYSTEM_YM2612_DUALPCM:
+          case DIV_SYSTEM_YM2612_DUALPCM_EXT:
             opnCount++;
             break;
           default:
@@ -2585,6 +2506,39 @@ bool DivEngine::loadFur(unsigned char* file, size_t len) {
       if (nesCount>snCount) {
         for (DivInstrument* i: ds.ins) {
           if (i->type==DIV_INS_STD) i->type=DIV_INS_NES;
+        }
+      }
+    }
+
+    // ExtCh compat flag
+    for (int i=0; i<ds.systemLen; i++) {
+      if (ds.system[i]==DIV_SYSTEM_YM2612_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2612_DUALPCM_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2610_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2610_FULL_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2610B_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2203_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2608_EXT ||
+          ds.system[i]==DIV_SYSTEM_YM2612_CSM ||
+          ds.system[i]==DIV_SYSTEM_YM2203_CSM ||
+          ds.system[i]==DIV_SYSTEM_YM2608_CSM ||
+          ds.system[i]==DIV_SYSTEM_YM2610_CSM ||
+          ds.system[i]==DIV_SYSTEM_YM2610B_CSM) {
+        if (ds.version<125) {
+          ds.systemFlags[i].set("noExtMacros",true);
+        }
+        if (ds.version<133) {
+          ds.systemFlags[i].set("fbAllOps",true);
+        }
+      }
+    }
+
+    // SN noise compat
+    if (ds.version<128) {
+      for (int i=0; i<ds.systemLen; i++) {
+        if (ds.system[i]==DIV_SYSTEM_SMS ||
+            ds.system[i]==DIV_SYSTEM_T6W28) {
+          ds.systemFlags[i].set("noEasyNoise",true);
         }
       }
     }
@@ -2924,7 +2878,7 @@ bool DivEngine::loadMod(unsigned char* file, size_t len) {
               writeFxCol(fxTyp,fxVal);
               break;
             case 12: // set vol
-              data[row][3]=fxVal;
+              data[row][3]=MIN(0x40,fxVal);
               break;
             case 13: // break to row (BCD)
               writeFxCol(fxTyp,((fxVal>>4)*10)+(fxVal&15));
@@ -4234,14 +4188,14 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
 
   // fail if values are out of range
   /*
-  if (subSong->ordersLen>256) {
-    logE("maximum song length is 256!");
-    lastError="maximum song length is 256";
+  if (subSong->ordersLen>DIV_MAX_PATTERNS) {
+    logE("maximum song length is %d!",DIV_MAX_PATTERNS);
+    lastError=fmt::sprintf("maximum song length is %d",DIV_MAX_PATTERNS);
     return NULL;
   }
-  if (subSong->patLen>256) {
-    logE("maximum pattern length is 256!");
-    lastError="maximum pattern length is 256";
+  if (subSong->patLen>DIV_MAX_ROWS) {
+    logE("maximum pattern length is %d!",DIV_MAX_ROWS);
+    lastError=fmt::sprintf("maximum pattern length is %d",DIV_MAX_ROWS);
     return NULL;
   }
   */
@@ -4295,18 +4249,18 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
     for (int i=0; i<chans; i++) {
       for (size_t j=0; j<song.subsong.size(); j++) {
         DivSubSong* subs=song.subsong[j];
-        for (int k=0; k<256; k++) {
+        for (int k=0; k<DIV_MAX_PATTERNS; k++) {
           if (subs->pat[i].data[k]==NULL) continue;
           patsToWrite.push_back(PatToWrite(j,i,k));
         }
       }
     }
   } else {
-    bool alreadyAdded[256];
+    bool alreadyAdded[DIV_MAX_PATTERNS];
     for (int i=0; i<chans; i++) {
       for (size_t j=0; j<song.subsong.size(); j++) {
         DivSubSong* subs=song.subsong[j];
-        memset(alreadyAdded,0,256*sizeof(bool));
+        memset(alreadyAdded,0,DIV_MAX_PATTERNS*sizeof(bool));
         for (int k=0; k<subs->ordersLen; k++) {
           if (alreadyAdded[subs->orders.ord[i][k]]) continue;
           patsToWrite.push_back(PatToWrite(j,i,subs->orders.ord[i][k]));
@@ -4335,7 +4289,7 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
   w->writeS(song.sampleLen);
   w->writeI(patsToWrite.size());
 
-  for (int i=0; i<32; i++) {
+  for (int i=0; i<DIV_MAX_CHIPS; i++) {
     if (i>=song.systemLen) {
       w->writeC(0);
     } else {
@@ -4343,17 +4297,17 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
     }
   }
 
-  for (int i=0; i<32; i++) {
+  for (int i=0; i<DIV_MAX_CHIPS; i++) {
     w->writeC(song.systemVol[i]);
   }
 
-  for (int i=0; i<32; i++) {
+  for (int i=0; i<DIV_MAX_CHIPS; i++) {
     w->writeC(song.systemPan[i]);
   }
 
   // chip flags (we'll seek here later)
   sysFlagsPtrSeek=w->tell();
-  for (int i=0; i<32; i++) {
+  for (int i=0; i<DIV_MAX_CHIPS; i++) {
     w->writeI(0);
   }
 
@@ -4464,9 +4418,8 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
   w->writeC(song.jumpTreatment);
   w->writeC(song.autoSystem);
   w->writeC(song.disableSampleMacro);
-  for (int i=0; i<2; i++) {
-    w->writeC(0);
-  }
+  w->writeC(song.brokenOutVol2);
+  w->writeC(song.oldArpStrategy);
 
   // first subsong virtual tempo
   w->writeS(subSong->virtualTempoN);
@@ -4578,7 +4531,8 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
   for (int i=0; i<song.insLen; i++) {
     DivInstrument* ins=song.ins[i];
     insPtr.push_back(w->tell());
-    ins->putInsData(w);
+    logV("writing instrument %d...",i);
+    ins->putInsData2(w,false);
   }
 
   /// WAVETABLE
@@ -4592,45 +4546,7 @@ SafeWriter* DivEngine::saveFur(bool notPrimary) {
   for (int i=0; i<song.sampleLen; i++) {
     DivSample* sample=song.sample[i];
     samplePtr.push_back(w->tell());
-    w->write("SMP2",4);
-    blockStartSeek=w->tell();
-    w->writeI(0);
-
-    w->writeString(sample->name,false);
-    w->writeI(sample->samples);
-    w->writeI(sample->rate);
-    w->writeI(sample->centerRate);
-    w->writeC(sample->depth);
-    w->writeC(0); // reserved
-    w->writeC(0);
-    w->writeC(0);
-    w->writeI(sample->loop?sample->loopStart:-1);
-    w->writeI(sample->loop?sample->loopEnd:-1);
-
-    for (int i=0; i<4; i++) {
-      w->writeI(0xffffffff);
-    }
-
-#ifdef TA_BIG_ENDIAN
-    // store 16-bit samples as little-endian
-    if (sample->depth==DIV_SAMPLE_DEPTH_16BIT) {
-      unsigned char* sampleBuf=(unsigned char*)sample->getCurBuf();
-      size_t bufLen=sample->getCurBufLen();
-      for (size_t i=0; i<bufLen; i+=2) {
-        w->writeC(sampleBuf[i+1]);
-        w->writeC(sampleBuf[i]);
-      }
-    } else {
-      w->write(sample->getCurBuf(),sample->getCurBufLen());
-    }
-#else
-    w->write(sample->getCurBuf(),sample->getCurBufLen());
-#endif
-
-    blockEndSeek=w->tell();
-    w->seek(blockStartSeek,SEEK_SET);
-    w->writeI(blockEndSeek-blockStartSeek-4);
-    w->seek(0,SEEK_END);
+    sample->putSampleData(w);
   }
 
   /// PATTERN

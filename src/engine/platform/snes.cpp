@@ -69,14 +69,16 @@ void DivPlatformSNES::acquire(short* bufL, short* bufR, size_t start, size_t len
   short out[2];
   short chOut[16];
   for (size_t h=start; h<start+len; h++) {
-    // TODO: delay
-    if (!writes.empty()) {
-      QueuedWrite w=writes.front();
-      dsp.write(w.addr,w.val);
-      regPool[w.addr&0x7f]=w.val;
-      writes.pop();
+    if (--delay<=0) {
+      delay=0;
+      if (!writes.empty()) {
+        QueuedWrite w=writes.front();
+        dsp.write(w.addr,w.val);
+        regPool[w.addr&0x7f]=w.val;
+        writes.pop();
+        delay=(w.addr==0x5c)?8:1;
+      }
     }
-
     dsp.set_output(out,1);
     dsp.run(32);
     dsp.get_voice_outputs(chOut);
@@ -102,9 +104,11 @@ void DivPlatformSNES::tick(bool sysTick) {
   for (int i=0; i<8; i++) {
     chan[i].std.next();
     if (chan[i].std.vol.had) {
-      chan[i].outVol=VOL_SCALE_LOG(chan[i].vol&127,MIN(127,chan[i].std.vol.val),127);
+      chan[i].outVol=VOL_SCALE_LINEAR(chan[i].vol&127,MIN(127,chan[i].std.vol.val),127);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_FREQUENCY(parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -159,7 +163,30 @@ void DivPlatformSNES::tick(bool sysTick) {
       }
     }
     if (chan[i].std.vol.had || chan[i].std.panL.had || chan[i].std.panR.had || hasInverted) {
-      writeOutVol(i);
+      chan[i].shallWriteVol=true;
+    }
+    if (chan[i].std.ex2.had) {
+      if (chan[i].std.ex2.val&0x80) {
+        switch (chan[i].std.ex2.val&0x60) {
+          case 0x00:
+            chan[i].state.gainMode=DivInstrumentSNES::GAIN_MODE_DEC_LINEAR;
+            break;
+          case 0x20:
+            chan[i].state.gainMode=DivInstrumentSNES::GAIN_MODE_DEC_LOG;
+            break;
+          case 0x40:
+            chan[i].state.gainMode=DivInstrumentSNES::GAIN_MODE_INC_LINEAR;
+            break;
+          case 0x60:
+            chan[i].state.gainMode=DivInstrumentSNES::GAIN_MODE_INC_INVLOG;
+            break;
+        }
+        chan[i].state.gain=chan[i].std.ex2.val&31;
+      } else {
+        chan[i].state.gainMode=DivInstrumentSNES::GAIN_MODE_DIRECT;
+        chan[i].state.gain=chan[i].std.ex2.val&127;
+      }
+      chan[i].shallWriteEnv=true;
     }
     if (chan[i].setPos) {
       // force keyon
@@ -173,11 +200,13 @@ void DivPlatformSNES::tick(bool sysTick) {
         updateWave(i);
       }
     }
+  }
+  for (int i=0; i<8; i++) {
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
       DivSample* s=parent->getSample(chan[i].sample);
       double off=(s->centerRate>=1)?((double)s->centerRate/8363.0):1.0;
       if (chan[i].useWave) off=(double)chan[i].wtLen/32.0;
-      chan[i].freq=(unsigned int)(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE));
+      chan[i].freq=(unsigned int)(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE));
       if (chan[i].freq>16383) chan[i].freq=16383;
       if (chan[i].keyOn) {
         unsigned int start, end, loop;
@@ -187,13 +216,13 @@ void DivPlatformSNES::tick(bool sysTick) {
           loop=start;
         } else if (chan[i].sample>=0 && chan[i].sample<parent->song.sampleLen) {
           start=sampleOff[chan[i].sample];
-          end=MIN(start+MAX(s->lengthBRR,1),getSampleMemCapacity());
+          end=MIN(start+MAX(s->lengthBRR+((s->loop && s->depth!=DIV_SAMPLE_DEPTH_BRR)?9:0),1),getSampleMemCapacity());
           loop=MAX(start,end-1);
           if (chan[i].audPos>0) {
             start=start+MIN(chan[i].audPos,s->lengthBRR-1)/16*9;
           }
           if (s->loopStart>=0) {
-            loop=start+s->loopStart/16*9;
+            loop=((s->depth!=DIV_SAMPLE_DEPTH_BRR)?9:0)+start+((s->loopStart/16)*9);
           }
         } else {
           start=0;
@@ -205,6 +234,7 @@ void DivPlatformSNES::tick(bool sysTick) {
         sampleMem[tabAddr+2]=loop&0xff;
         sampleMem[tabAddr+3]=loop>>8;
         kon|=(1<<i);
+        koff|=(1<<i);
         chan[i].keyOn=false;
       }
       if (chan[i].keyOff) {
@@ -219,6 +249,9 @@ void DivPlatformSNES::tick(bool sysTick) {
         chan[i].freqChanged=false;
       }
     }
+  }
+  if (koff!=0) {
+    rWrite(0x5c,koff);
   }
   if (writeControl) {
     unsigned char control=(noiseFreq&0x1f)|(echoOn?0:0x20);
@@ -267,11 +300,24 @@ void DivPlatformSNES::tick(bool sysTick) {
     rWrite(0x4d,echoBits);
     writeEcho=false;
   }
+  for (int i=0; i<8; i++) {
+    if (chan[i].shallWriteEnv) {
+      writeEnv(i);
+      chan[i].shallWriteEnv=false;
+    }
+  }
+  if (koff!=0) {
+    rWrite(0x5c,0);
+  }
   if (kon!=0) {
     rWrite(0x4c,kon);
   }
-  // always write KOFF as it's constantly polled
-  rWrite(0x5c,koff);
+  for (int i=0; i<8; i++) {
+    if (chan[i].shallWriteVol) {
+      writeOutVol(i);
+      chan[i].shallWriteVol=false;
+    }
+  }
 }
 
 int DivPlatformSNES::dispatch(DivCommand c) {
@@ -290,7 +336,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
         }
         chan[c.chan].ws.init(ins,chan[c.chan].wtLen,15,chan[c.chan].insChanged);
       } else {
-        chan[c.chan].sample=ins->amiga.getSample(c.value);
+        if (c.value!=DIV_NOTE_NULL) chan[c.chan].sample=ins->amiga.getSample(c.value);
         chan[c.chan].useWave=false;
       }
       if (chan[c.chan].useWave || chan[c.chan].sample<0 || chan[c.chan].sample>=parent->song.sampleLen) {
@@ -301,7 +347,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       }
       chan[c.chan].active=true;
       if (chan[c.chan].insChanged || chan[c.chan].state.sus) {
-        writeEnv(c.chan);
+        chan[c.chan].shallWriteEnv=true;
       }
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=round(NOTE_FREQUENCY(c.value));
@@ -318,7 +364,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       chan[c.chan].keyOff=true;
       chan[c.chan].keyOn=false;
       if (chan[c.chan].state.sus) {
-        writeEnv(c.chan);
+        chan[c.chan].shallWriteEnv=true;
       } else {
         chan[c.chan].macroInit(NULL);
       }
@@ -328,7 +374,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       chan[c.chan].keyOff=true;
       chan[c.chan].keyOn=false;
       if (chan[c.chan].state.sus) {
-        writeEnv(c.chan);
+        chan[c.chan].shallWriteEnv=true;
       }
       chan[c.chan].std.release();
       break;
@@ -346,7 +392,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
         chan[c.chan].vol=c.value;
         if (!chan[c.chan].std.vol.has) {
           chan[c.chan].outVol=c.value;
-          writeOutVol(c.chan);
+          chan[c.chan].shallWriteVol=true;
         }
       }
       break;
@@ -356,7 +402,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
     case DIV_CMD_PANNING:
       chan[c.chan].panL=c.value>>1;
       chan[c.chan].panR=c.value2>>1;
-      writeOutVol(c.chan);
+      chan[c.chan].shallWriteVol=true;
       break;
     case DIV_CMD_PITCH:
       chan[c.chan].pitch=c.value;
@@ -391,7 +437,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       break;
     }
     case DIV_CMD_LEGATO: {
-      chan[c.chan].baseFreq=round(NOTE_FREQUENCY(c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val):(0))));
+      chan[c.chan].baseFreq=round(NOTE_FREQUENCY(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0))));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -418,7 +464,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
     case DIV_CMD_SNES_INVERT:
       chan[c.chan].invertL=(c.value>>4);
       chan[c.chan].invertR=c.chan&15;
-      writeOutVol(c.chan);
+      chan[c.chan].shallWriteVol=true;
       break;
     case DIV_CMD_SNES_GAIN_MODE:
       if (c.value) {
@@ -443,7 +489,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       } else {
         chan[c.chan].state.useEnv=true;
       }
-      writeEnv(c.chan);
+      chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_SNES_GAIN:
       if (chan[c.chan].state.gainMode==DivInstrumentSNES::GAIN_MODE_DIRECT) {
@@ -451,7 +497,7 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       } else {
         chan[c.chan].state.gain=c.value&0x1f;
       }
-      if (!chan[c.chan].state.useEnv) writeEnv(c.chan);
+      if (!chan[c.chan].state.useEnv) chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_STD_NOISE_FREQ:
       noiseFreq=c.value&0x1f;
@@ -459,19 +505,19 @@ int DivPlatformSNES::dispatch(DivCommand c) {
       break;
     case DIV_CMD_FM_AR:
       chan[c.chan].state.a=c.value&15;
-      if (chan[c.chan].state.useEnv) writeEnv(c.chan);
+      if (chan[c.chan].state.useEnv) chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_FM_DR:
       chan[c.chan].state.d=c.value&7;
-      if (chan[c.chan].state.useEnv) writeEnv(c.chan);
+      if (chan[c.chan].state.useEnv) chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_FM_SL:
       chan[c.chan].state.s=c.value&7;
-      if (chan[c.chan].state.useEnv) writeEnv(c.chan);
+      if (chan[c.chan].state.useEnv) chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_FM_RR:
       chan[c.chan].state.r=c.value&0x1f;
-      if (chan[c.chan].state.useEnv) writeEnv(c.chan);
+      if (chan[c.chan].state.useEnv) chan[c.chan].shallWriteEnv=true;
       break;
     case DIV_CMD_SNES_ECHO:
       chan[c.chan].echo=c.value;
@@ -517,6 +563,12 @@ int DivPlatformSNES::dispatch(DivCommand c) {
     case DIV_CMD_GET_VOLMAX:
       return 127;
       break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
+      break;
     default:
       break;
   }
@@ -552,10 +604,29 @@ void DivPlatformSNES::writeOutVol(int ch) {
 
 void DivPlatformSNES::writeEnv(int ch) {
   if (chan[ch].state.useEnv) {
-    chWrite(ch,5,chan[ch].state.a|(chan[ch].state.d<<4)|0x80);
-    if (chan[ch].state.sus && chan[ch].active) {
-      chWrite(ch,6,chan[ch].state.s<<5);
+    if (chan[ch].state.sus) {
+      if (chan[ch].active) {
+        chWrite(ch,5,chan[ch].state.a|(chan[ch].state.d<<4)|0x80);
+        chWrite(ch,6,(chan[ch].state.s<<5)|(chan[ch].state.d2&31));
+      } else {
+        switch (chan[ch].state.sus) {
+          case 1: // dec linear
+            chWrite(ch,7,0x80|chan[ch].state.r);
+            chWrite(ch,5,0);
+            break;
+          case 2: // dec exp
+            chWrite(ch,7,0xa0|chan[ch].state.r);
+            chWrite(ch,5,0);
+            break;
+          case 3: // update r
+            chWrite(ch,6,(chan[ch].state.s<<5)|(chan[ch].state.r&31));
+            break;
+          default: // what?
+            break;
+        }
+      }
     } else {
+      chWrite(ch,5,chan[ch].state.a|(chan[ch].state.d<<4)|0x80);
       chWrite(ch,6,chan[ch].state.r|(chan[ch].state.s<<5));
     }
   } else {
@@ -582,7 +653,7 @@ void DivPlatformSNES::writeEnv(int ch) {
 
 void DivPlatformSNES::muteChannel(int ch, bool mute) {
   isMuted[ch]=mute;
-  writeOutVol(ch);
+  chan[ch].shallWriteVol=true;
 }
 
 void DivPlatformSNES::forceIns() {
@@ -747,19 +818,35 @@ size_t DivPlatformSNES::getSampleMemUsage(int index) {
   return index == 0 ? sampleMemLen : 0;
 }
 
-void DivPlatformSNES::renderSamples() {
+bool DivPlatformSNES::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>255) return false;
+  return sampleLoaded[sample];
+}
+
+void DivPlatformSNES::renderSamples(int sysID) {
   memset(copyOfSampleMem,0,getSampleMemCapacity());
   memset(sampleOff,0,256*sizeof(unsigned int));
+  memset(sampleLoaded,0,256*sizeof(bool));
 
   // skip past sample table and wavetable buffer
   size_t memPos=sampleTableBase+8*4+8*9*16;
   for (int i=0; i<parent->song.sampleLen; i++) {
     DivSample* s=parent->song.sample[i];
-    int length=s->lengthBRR;
+    if (!s->renderOn[0][sysID]) {
+      sampleOff[i]=0;
+      continue;
+    }
+
+    int length=s->lengthBRR+((s->loop && s->depth!=DIV_SAMPLE_DEPTH_BRR)?9:0);
     int actualLength=MIN((int)(getSampleMemCapacity()-memPos)/9*9,length);
     if (actualLength>0) {
       sampleOff[i]=memPos;
       memcpy(&copyOfSampleMem[memPos],s->dataBRR,actualLength);
+      // inject loop if needed
+      if (s->loop) {
+        copyOfSampleMem[memPos+actualLength-9]|=3;
+      }
       memPos+=actualLength;
     }
     if (actualLength<length) {
@@ -768,6 +855,7 @@ void DivPlatformSNES::renderSamples() {
       logW("out of BRR memory for sample %d!",i);
       break;
     }
+    sampleLoaded[i]=true;
   }
   sampleMemLen=memPos;
   memcpy(sampleMem,copyOfSampleMem,65536);

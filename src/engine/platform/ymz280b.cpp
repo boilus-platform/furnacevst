@@ -93,7 +93,9 @@ void DivPlatformYMZ280B::tick(bool sysTick) {
       chan[i].outVol=((chan[i].vol&0xff)*MIN(chan[i].macroVolMul,chan[i].std.vol.val))/chan[i].macroVolMul;
       writeOutVol(i);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_FREQUENCY(parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -139,7 +141,7 @@ void DivPlatformYMZ280B::tick(bool sysTick) {
         default: ctrl=0;
       }
       double off=(s->centerRate>=1)?((double)s->centerRate/8363.0):1.0;
-      chan[i].freq=(int)round(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE)/256.0)-1;
+      chan[i].freq=(int)round(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE)/256.0)-1;
       if (chan[i].freq<0) chan[i].freq=0;
       if (chan[i].freq>511) chan[i].freq=511;
       // ADPCM has half the range
@@ -210,7 +212,7 @@ int DivPlatformYMZ280B::dispatch(DivCommand c) {
       DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_AMIGA);
       chan[c.chan].isNewYMZ=ins->type==DIV_INS_YMZ280B;
       chan[c.chan].macroVolMul=ins->type==DIV_INS_AMIGA?64:255;
-      chan[c.chan].sample=ins->amiga.getSample(c.value);
+      if (c.value!=DIV_NOTE_NULL) chan[c.chan].sample=ins->amiga.getSample(c.value);
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value);
       }
@@ -292,7 +294,7 @@ int DivPlatformYMZ280B::dispatch(DivCommand c) {
       break;
     }
     case DIV_CMD_LEGATO: {
-      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val-12):(0)));
+      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val-12):(0)));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -301,7 +303,7 @@ int DivPlatformYMZ280B::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_AMIGA));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_SAMPLE_POS:
@@ -310,6 +312,12 @@ int DivPlatformYMZ280B::dispatch(DivCommand c) {
       break;
     case DIV_CMD_GET_VOLMAX:
       return 255;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -420,18 +428,40 @@ size_t DivPlatformYMZ280B::getSampleMemUsage(int index) {
   return index == 0 ? sampleMemLen : 0;
 }
 
-void DivPlatformYMZ280B::renderSamples() {
+bool DivPlatformYMZ280B::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>255) return false;
+  return sampleLoaded[sample];
+}
+
+void DivPlatformYMZ280B::renderSamples(int sysID) {
   memset(sampleMem,0,getSampleMemCapacity());
   memset(sampleOff,0,256*sizeof(unsigned int));
+  memset(sampleLoaded,0,256*sizeof(bool));
 
   size_t memPos=0;
   for (int i=0; i<parent->song.sampleLen; i++) {
     DivSample* s=parent->song.sample[i];
+    if (!s->renderOn[0][sysID]) {
+      sampleOff[i]=0;
+      continue;
+    }
+
     int length=s->getCurBufLen();
     unsigned char* src=(unsigned char*)s->getCurBuf();
     int actualLength=MIN((int)(getSampleMemCapacity()-memPos),length);
     if (actualLength>0) {
+#ifdef TA_BIG_ENDIAN
       memcpy(&sampleMem[memPos],src,actualLength);
+#else
+      if (s->depth==DIV_SAMPLE_DEPTH_16BIT) {
+        for (int i=0; i<actualLength; i++) {
+          sampleMem[memPos+i]=src[i^1];
+        }
+      } else {
+        memcpy(&sampleMem[memPos],src,actualLength);
+      }
+#endif
       sampleOff[i]=memPos;
       memPos+=length;
     }
@@ -439,6 +469,7 @@ void DivPlatformYMZ280B::renderSamples() {
       logW("out of YMZ280B PCM memory for sample %d!",i);
       break;
     }
+    sampleLoaded[i]=true;
   }
   sampleMemLen=memPos;
 }
@@ -471,6 +502,7 @@ void DivPlatformYMZ280B::setFlags(const DivConfig& flags) {
           chipClock=16934400;
           break;
       }
+      CHECK_CUSTOM_CLOCK;
       rate=chipClock/384;
       break;
     case 759:

@@ -153,7 +153,7 @@ void DivPlatformPCE::tick(bool sysTick) {
 
     chan[i].std.next();
     if (chan[i].std.vol.had) {
-      chan[i].outVol=VOL_SCALE_LOG(chan[i].vol&31,MIN(31,chan[i].std.vol.val),31);
+      chan[i].outVol=VOL_SCALE_LOG_BROKEN(chan[i].vol&31,MIN(31,chan[i].std.vol.val),31);
       if (chan[i].furnaceDac && chan[i].pcm) {
         // ignore for now
       } else {
@@ -167,7 +167,12 @@ void DivPlatformPCE::tick(bool sysTick) {
       if (noiseSeek<0) noiseSeek=0;
       chWrite(i,0x07,chan[i].noise?(0x80|(parent->song.properNoiseLayout?(noiseSeek&31):noiseFreq[noiseSeek%12])):0);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+      int noiseSeek=chan[i].fixedArp?chan[i].baseNoteOverride:(chan[i].note+chan[i].arpOff);
+      if (noiseSeek<0) noiseSeek=0;
+      chWrite(i,0x07,chan[i].noise?(0x80|(parent->song.properNoiseLayout?(noiseSeek&31):noiseFreq[noiseSeek%12])):0);
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         int noiseSeek=parent->calcArp(chan[i].note,chan[i].std.arp.val);
         chan[i].baseFreq=NOTE_PERIODIC(noiseSeek);
@@ -223,7 +228,7 @@ void DivPlatformPCE::tick(bool sysTick) {
     }
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
       //DivInstrument* ins=parent->getIns(chan[i].ins,DIV_INS_PCE);
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
       if (chan[i].furnaceDac && chan[i].pcm) {
         double off=1.0;
         if (chan[i].dacSample>=0 && chan[i].dacSample<parent->song.sampleLen) {
@@ -252,6 +257,11 @@ void DivPlatformPCE::tick(bool sysTick) {
       chan[i].freqChanged=false;
     }
   }
+  if (updateLFO) {
+    rWrite(0x08,lfoSpeed);
+    rWrite(0x09,lfoMode);
+    updateLFO=false;
+  }
 }
 
 int DivPlatformPCE::dispatch(DivCommand c) {
@@ -268,7 +278,7 @@ int DivPlatformPCE::dispatch(DivCommand c) {
         if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
           chan[c.chan].furnaceDac=true;
           if (skipRegisterWrites) break;
-          chan[c.chan].dacSample=ins->amiga.getSample(c.value);
+          if (c.value!=DIV_NOTE_NULL) chan[c.chan].dacSample=ins->amiga.getSample(c.value);
           if (chan[c.chan].dacSample<0 || chan[c.chan].dacSample>=parent->song.sampleLen) {
             chan[c.chan].dacSample=-1;
             if (dumpWrites) addWrite(0xffff0002+(c.chan<<8),0);
@@ -389,13 +399,11 @@ int DivPlatformPCE::dispatch(DivCommand c) {
       } else {
         lfoMode=c.value;
       }
-      rWrite(0x08,lfoSpeed);
-      rWrite(0x09,lfoMode);
+      updateLFO=true;
       break;
     case DIV_CMD_PCE_LFO_SPEED:
       lfoSpeed=255-c.value;
-      rWrite(0x08,lfoSpeed);
-      rWrite(0x09,lfoMode);
+      updateLFO=true;
       break;
     case DIV_CMD_NOTE_PORTA: {
       int destFreq=NOTE_PERIODIC(c.value2);
@@ -439,7 +447,7 @@ int DivPlatformPCE::dispatch(DivCommand c) {
       break;
     }
     case DIV_CMD_LEGATO:
-      chan[c.chan].baseFreq=NOTE_PERIODIC(c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val):(0)));
+      chan[c.chan].baseFreq=NOTE_PERIODIC(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -447,11 +455,17 @@ int DivPlatformPCE::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_PCE));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_GET_VOLMAX:
       return 31;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -525,8 +539,7 @@ void DivPlatformPCE::reset() {
   rWrite(0,0);
   rWrite(0x01,0xff);
   // set LFO
-  rWrite(0x08,lfoSpeed);
-  rWrite(0x09,lfoMode);
+  updateLFO=true;
   // set per-channel initial panning
   for (int i=0; i<6; i++) {
     chWrite(i,0x05,isMuted[i]?0:chan[i].pan);
@@ -563,6 +576,7 @@ void DivPlatformPCE::setFlags(const DivConfig& flags) {
   } else {
     chipClock=COLOR_NTSC;
   }
+  CHECK_CUSTOM_CLOCK;
   antiClickEnabled=!flags.getBool("noAntiClick",false);
   rate=chipClock/12;
   for (int i=0; i<6; i++) {
@@ -588,6 +602,7 @@ int DivPlatformPCE::init(DivEngine* p, int channels, int sugRate, const DivConfi
   parent=p;
   dumpWrites=false;
   skipRegisterWrites=false;
+  updateLFO=false;
   for (int i=0; i<6; i++) {
     isMuted[i]=false;
     oscBuf[i]=new DivDispatchOscBuffer;

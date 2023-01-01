@@ -157,6 +157,80 @@ const char** DivPlatformYM2203::getRegisterSheet() {
 }
 
 void DivPlatformYM2203::acquire(short* bufL, short* bufR, size_t start, size_t len) {
+  if (useCombo) {
+    acquire_combo(bufL,bufR,start,len);
+  } else {
+    acquire_ymfm(bufL,bufR,start,len);
+  }
+}
+
+void DivPlatformYM2203::acquire_combo(short* bufL, short* bufR, size_t start, size_t len) {
+  static int os;
+  static short ignored[2];
+
+  for (size_t h=start; h<start+len; h++) {
+    os=0;
+    // Nuked part
+    for (unsigned int i=0; i<nukedMult; i++) {
+      if (!writes.empty()) {
+        if (--delay<1 && !(fm->read(0)&0x80)) {
+          QueuedWrite& w=writes.front();
+
+          if (w.addr<=0x1c || w.addr==0x2d || w.addr==0x2e || w.addr==0x2f) {
+            // ymfm write
+            fm->write(0x0,w.addr);
+            fm->write(0x1,w.val);
+
+            regPool[w.addr&0xff]=w.val;
+            writes.pop_front();
+            delay=1;
+          } else {
+            // Nuked write
+            if (w.addrOrVal) {
+              OPN2_Write(&fm_nuked,0x1,w.val);
+              regPool[w.addr&0xff]=w.val;
+              writes.pop_front();
+            } else {
+              lastBusy++;
+              if (fm_nuked.write_busy==0) {
+                OPN2_Write(&fm_nuked,0x0,w.addr);
+                w.addrOrVal=true;
+              }
+            }
+          }
+        }
+      }
+
+      OPN2_Clock(&fm_nuked,ignored);
+    }
+    os=(
+      (fm_nuked.ch_out[0])+
+      (fm_nuked.ch_out[1])+
+      (fm_nuked.ch_out[2])
+    );
+
+    os&=~3;
+
+    // ymfm part
+    fm->generate(&fmout);
+
+    os+=((fmout.data[1]+fmout.data[2]+fmout.data[3])>>1);
+    if (os<-32768) os=-32768;
+    if (os>32767) os=32767;
+  
+    bufL[h]=os;
+    
+    for (int i=0; i<3; i++) {
+      oscBuf[i]->data[oscBuf[i]->needle++]=fm_nuked.ch_out[i];
+    }
+
+    for (int i=3; i<6; i++) {
+      oscBuf[i]->data[oscBuf[i]->needle++]=fmout.data[i-2];
+    }
+  }
+}
+
+void DivPlatformYM2203::acquire_ymfm(short* bufL, short* bufR, size_t start, size_t len) {
   static int os;
 
   ymfm::ym2203::fm_engine* fme=fm->debug_fm_engine();
@@ -214,7 +288,7 @@ void DivPlatformYM2203::tick(bool sysTick) {
     chan[i].std.next();
 
     if (chan[i].std.vol.had) {
-      chan[i].outVol=VOL_SCALE_LOG(chan[i].vol,MIN(127,chan[i].std.vol.val),127);
+      chan[i].outVol=VOL_SCALE_LOG_BROKEN(chan[i].vol,MIN(127,chan[i].std.vol.val),127);
       for (int j=0; j<4; j++) {
         unsigned short baseAddr=chanOffs[i]|opOffs[j];
         DivInstrumentFM::Operator& op=chan[i].state.op[j];
@@ -222,7 +296,7 @@ void DivPlatformYM2203::tick(bool sysTick) {
           rWrite(baseAddr+ADDR_TL,127);
         } else {
           if (KVS(i,j)) {
-            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[i].outVol&0x7f,127));
+            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[i].outVol&0x7f,127));
           } else {
             rWrite(baseAddr+ADDR_TL,op.tl);
           }
@@ -230,7 +304,9 @@ void DivPlatformYM2203::tick(bool sysTick) {
       }
     }
 
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_FNUM_BLOCK(parent->calcArp(chan[i].note,chan[i].std.arp.val),11);
       }
@@ -240,7 +316,7 @@ void DivPlatformYM2203::tick(bool sysTick) {
     if (chan[i].std.pitch.had) {
       if (chan[i].std.pitch.mode) {
         chan[i].pitch2+=chan[i].std.pitch.val;
-        CLAMP_VAR(chan[i].pitch2,-32768,32767);
+        CLAMP_VAR(chan[i].pitch2,-1048576,1048575);
       } else {
         chan[i].pitch2=chan[i].std.pitch.val;
       }
@@ -263,7 +339,7 @@ void DivPlatformYM2203::tick(bool sysTick) {
           rWrite(baseAddr+ADDR_TL,127);
         } else {
           if (KVS(i,j)) {
-            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[i].outVol&0x7f,127));
+            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[i].outVol&0x7f,127));
           } else {
             rWrite(baseAddr+ADDR_TL,op.tl);
           }
@@ -312,7 +388,7 @@ void DivPlatformYM2203::tick(bool sysTick) {
           rWrite(baseAddr+ADDR_TL,127);
         } else {
           if (KVS(i,j)) {
-            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[i].outVol&0x7f,127));
+            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[i].outVol&0x7f,127));
           } else {
             rWrite(baseAddr+ADDR_TL,op.tl);
           }
@@ -371,9 +447,9 @@ void DivPlatformYM2203::tick(bool sysTick) {
     if (i==2 && extMode) continue;
     if (chan[i].freqChanged) {
       if (parent->song.linearPitch==2) {
-        chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,false,4,chan[i].pitch2,chipClock,CHIP_FREQBASE,11);
+        chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,4,chan[i].pitch2,chipClock,CHIP_FREQBASE,11);
       } else {
-        int fNum=parent->calcFreq(chan[i].baseFreq&0x7ff,chan[i].pitch,false,4,chan[i].pitch2);
+        int fNum=parent->calcFreq(chan[i].baseFreq&0x7ff,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,4,chan[i].pitch2);
         int block=(chan[i].baseFreq&0xf800)>>11;
         if (fNum<0) fNum=0;
         if (fNum>2047) {
@@ -430,7 +506,7 @@ int DivPlatformYM2203::dispatch(DivCommand c) {
         } else {
           if (KVS(c.chan,i)) {
             if (!chan[c.chan].active || chan[c.chan].insChanged) {
-              rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[c.chan].outVol&0x7f,127));
+              rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[c.chan].outVol&0x7f,127));
             }
           } else {
             if (chan[c.chan].insChanged) {
@@ -489,7 +565,7 @@ int DivPlatformYM2203::dispatch(DivCommand c) {
           rWrite(baseAddr+ADDR_TL,127);
         } else {
           if (KVS(c.chan,i)) {
-            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[c.chan].outVol&0x7f,127));
+            rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[c.chan].outVol&0x7f,127));
           } else {
             rWrite(baseAddr+ADDR_TL,op.tl);
           }
@@ -574,7 +650,7 @@ int DivPlatformYM2203::dispatch(DivCommand c) {
         rWrite(baseAddr+ADDR_TL,127);
       } else {
         if (KVS(c.chan,c.value)) {
-          rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[c.chan].outVol&0x7f,127));
+          rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[c.chan].outVol&0x7f,127));
         } else {
           rWrite(baseAddr+ADDR_TL,op.tl);
         }
@@ -729,6 +805,12 @@ int DivPlatformYM2203::dispatch(DivCommand c) {
     case DIV_CMD_FM_HARD_RESET:
       chan[c.chan].hardReset=c.value;
       break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
+      break;
     case DIV_ALWAYS_SET_VOLUME:
       return 0;
       break;
@@ -766,7 +848,7 @@ void DivPlatformYM2203::muteChannel(int ch, bool mute) {
       rWrite(baseAddr+ADDR_TL,127);
     } else {
       if (KVS(ch,j)) {
-        rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[ch].outVol&0x7f,127));
+        rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[ch].outVol&0x7f,127));
       } else {
         rWrite(baseAddr+ADDR_TL,op.tl);
       }
@@ -783,7 +865,7 @@ void DivPlatformYM2203::forceIns() {
         rWrite(baseAddr+ADDR_TL,127);
       } else {
         if (KVS(i,j)) {
-          rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG(127-op.tl,chan[i].outVol&0x7f,127));
+          rWrite(baseAddr+ADDR_TL,127-VOL_SCALE_LOG_BROKEN(127-op.tl,chan[i].outVol&0x7f,127));
         } else {
           rWrite(baseAddr+ADDR_TL,op.tl);
         }
@@ -849,9 +931,11 @@ void DivPlatformYM2203::reset() {
   if (dumpWrites) {
     addWrite(0xffffffff,0);
   }
+  OPN2_Reset(&fm_nuked);
+  OPN2_SetChipType(&fm_nuked,ym3438_mode_opn);
   fm->reset();
   for (int i=0; i<6; i++) {
-    chan[i]=DivPlatformYM2203::Channel();
+    chan[i]=DivPlatformOPN::OPNChannel();
     chan[i].std.setEngine(parent);
   }
   for (int i=0; i<3; i++) {
@@ -938,20 +1022,26 @@ void DivPlatformYM2203::setFlags(const DivConfig& flags) {
       fmFreqBase=4720270.0/2.0,
       fmDivBase=18,
       ayDiv=8;
+      nukedMult=16;
       break;
     case 0x02: // /2
       prescale=0x2f;
       fmFreqBase=4720270.0/3.0,
       fmDivBase=12,
       ayDiv=4;
+      nukedMult=24;
       break;
     default: // /6
       prescale=0x2d;
       fmFreqBase=4720270.0,
       fmDivBase=36,
       ayDiv=16;
+      nukedMult=8;
       break;
   }
+  CHECK_CUSTOM_CLOCK;
+  noExtMacros=flags.getBool("noExtMacros",false);
+  fbAllOps=flags.getBool("fbAllOps",false);
   rate=fm->sample_rate(chipClock);
   for (int i=0; i<6; i++) {
     oscBuf[i]->rate=rate;

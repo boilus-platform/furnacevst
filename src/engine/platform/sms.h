@@ -21,7 +21,6 @@
 #define _SMS_H
 
 #include "../dispatch.h"
-#include "../macroInt.h"
 #include "sound/sn76496.h"
 extern "C" {
   #include "../../../extern/Nuked-PSG/ympsg.h"
@@ -29,31 +28,13 @@ extern "C" {
 #include <queue>
 
 class DivPlatformSMS: public DivDispatch {
-  struct Channel {
-    int freq, baseFreq, pitch, pitch2, note, actualNote, ins;
-    bool active, insChanged, freqChanged, keyOn, keyOff, inPorta;
-    signed char vol, outVol;
-    DivMacroInt std;
-    void macroInit(DivInstrument* which) {
-      std.init(which);
-      pitch2=0;
-    }
+  struct Channel: public SharedChannel<signed char> {
+    int actualNote;
+    bool writeVol;
     Channel():
-      freq(0),
-      baseFreq(0),
-      pitch(0),
-      pitch2(0),
-      note(0),
+      SharedChannel<signed char>(15),
       actualNote(0),
-      ins(-1),
-      active(false),
-      insChanged(true),
-      freqChanged(false),
-      keyOn(false),
-      keyOff(false),
-      inPorta(false),
-      vol(15),
-      outVol(15) {}
+      writeVol(false) {}
   };
   Channel chan[4];
   DivDispatchOscBuffer* oscBuf[4];
@@ -69,6 +50,7 @@ class DivPlatformSMS: public DivDispatch {
   bool isRealSN;
   bool stereo;
   bool nuked;
+  bool easyNoise;
   sn76496_base_device* sn;
   ympsg_t sn_nuked;
   struct QueuedWrite {
@@ -80,6 +62,9 @@ class DivPlatformSMS: public DivDispatch {
   std::queue<QueuedWrite> writes;
   friend void putDispatchChip(void*,int);
   friend void putDispatchChan(void*,int,int);
+
+  double NOTE_SN(int ch, int note);
+  int snCalcFreq(int ch);
 
   void acquire_nuked(short* bufL, short* bufR, size_t start, size_t len);
   void acquire_mame(short* bufL, short* bufR, size_t start, size_t len);

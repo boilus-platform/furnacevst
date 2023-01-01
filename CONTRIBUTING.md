@@ -29,6 +29,7 @@ the coding style is described here:
   - no spaces in operations except for `||` and `&&`
   - no space between variable name and assignment
   - space between macro in string literals
+  - space after comment delimiter
   - C++ pointer style: `void* variable` rather than `void *variable`
   - indent switch cases
   - preprocessor directives not intended
@@ -76,6 +77,7 @@ additional guidelines:
     - I will run a test suite to make sure this is the case.
     - if something breaks, you might want to add a compatibility flag (this requires changing the format though).
 - do not use `#pragma once`.
+- do not memcmp() structs.
 - on a switch block, **always** put `default` last and not in any other position.
   - I have fear of some C/C++ compilers ignoring the rest of cases upon hitting default.
 
@@ -85,7 +87,7 @@ just put your demo song in `demos/`! be noted there are some guidelines:
 
 - avoid Nintendo song covers.
 - avoid big label song covers.
-- avoid poor quality songs.
+- low effort compositions/covers may not be accepted at all.
 
 # Finishing
 

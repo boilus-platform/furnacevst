@@ -133,7 +133,9 @@ void DivPlatformSwan::tick(bool sysTick) {
       }
       calcAndWriteOutVol(i,env);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_PERIODIC(parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -172,7 +174,7 @@ void DivPlatformSwan::tick(bool sysTick) {
       }
     }
     if (chan[i].freqChanged || chan[i].keyOn || chan[i].keyOff) {
-      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
+      chan[i].freq=parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,true,0,chan[i].pitch2,chipClock,CHIP_DIVIDER);
       if (i==1 && pcm && furnaceDac) {
         double off=1.0;
         if (dacSample>=0 && dacSample<parent->song.sampleLen) {
@@ -232,7 +234,7 @@ int DivPlatformSwan::dispatch(DivCommand c) {
           dacPos=0;
           dacPeriod=0;
           if (ins->type==DIV_INS_AMIGA || ins->amiga.useSample) {
-            dacSample=ins->amiga.getSample(c.value);
+            if (c.value!=DIV_NOTE_NULL) dacSample=ins->amiga.getSample(c.value);
             if (dacSample<0 || dacSample>=parent->song.sampleLen) {
               dacSample=-1;
               if (dumpWrites) addWrite(0xffff0002,0);
@@ -392,7 +394,7 @@ int DivPlatformSwan::dispatch(DivCommand c) {
       break;
     }
     case DIV_CMD_LEGATO:
-      chan[c.chan].baseFreq=NOTE_PERIODIC(c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val):(0)));
+      chan[c.chan].baseFreq=NOTE_PERIODIC(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val):(0)));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -400,11 +402,17 @@ int DivPlatformSwan::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_SWAN));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_PERIODIC(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_GET_VOLMAX:
       return 15;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -514,6 +522,7 @@ int DivPlatformSwan::init(DivEngine* p, int channels, int sugRate, const DivConf
   dumpWrites=false;
   skipRegisterWrites=false;
   chipClock=3072000;
+  CHECK_CUSTOM_CLOCK;
   rate=chipClock/16; // = 192000kHz, should be enough
   for (int i=0; i<4; i++) {
     isMuted[i]=false;

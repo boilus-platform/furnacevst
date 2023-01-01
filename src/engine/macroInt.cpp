@@ -21,14 +21,36 @@
 #include "instrument.h"
 #include "engine.h"
 
+#define ADSR_LOW source.val[0]
+#define ADSR_HIGH source.val[1]
+#define ADSR_AR source.val[2]
+#define ADSR_HT source.val[3]
+#define ADSR_DR source.val[4]
+#define ADSR_SL source.val[5]
+#define ADSR_ST source.val[6]
+#define ADSR_SR source.val[7]
+#define ADSR_RR source.val[8]
+
+#define LFO_SPEED source.val[11]
+#define LFO_WAVE source.val[12]
+#define LFO_PHASE source.val[13]
+#define LFO_LOOP source.val[14]
+#define LFO_GLOBAL source.val[15]
+
 void DivMacroStruct::prepare(DivInstrumentMacro& source, DivEngine* e) {
   has=had=actualHad=will=true;
   mode=source.mode;
+  type=(source.open>>1)&3;
   linger=(source.name=="vol" && e->song.volMacroLinger);
+  lfoPos=LFO_PHASE;
 }
 
 void DivMacroStruct::doMacro(DivInstrumentMacro& source, bool released, bool tick) {
   if (!tick) {
+    had=false;
+    return;
+  }
+  if (masked) {
     had=false;
     return;
   }
@@ -53,24 +75,85 @@ void DivMacroStruct::doMacro(DivInstrumentMacro& source, bool released, bool tic
   }
   actualHad=has;
   had=actualHad;
+
   if (has) {
-    lastPos=pos;
-    val=source.val[pos++];
-    if (pos>source.rel && !released) {
-      if (source.loop<source.len && source.loop<source.rel) {
-        pos=source.loop;
-      } else {
-        pos--;
+    if (type==0) { // sequence
+      lastPos=pos;
+      val=source.val[pos++];
+      if (pos>source.rel && !released) {
+        if (source.loop<source.len && source.loop<source.rel) {
+          pos=source.loop;
+        } else {
+          pos--;
+        }
+      }
+      if (pos>=source.len) {
+        if (source.loop<source.len && (source.loop>=source.rel || source.rel>=source.len)) {
+          pos=source.loop;
+        } else if (linger) {
+          pos--;
+        } else {
+          has=false;
+        }
       }
     }
-    if (pos>=source.len) {
-      if (source.loop<source.len && (source.loop>=source.rel || source.rel>=source.len)) {
-        pos=source.loop;
-      } else if (linger) {
-        pos--;
-      } else {
-        has=false;
+    if (type==1) { // ADSR
+      if (released && lastPos<3) lastPos=3;
+      switch (lastPos) {
+        case 0: // attack
+          pos+=ADSR_AR;
+          if (pos>255) {
+            pos=255;
+            lastPos=1;
+            delay=ADSR_HT;
+          }
+          break;
+        case 1: // decay
+          pos-=ADSR_DR;
+          if (pos<=ADSR_SL) {
+            pos=ADSR_SL;
+            lastPos=2;
+            delay=ADSR_ST;
+          }
+          break;
+        case 2: // sustain
+          pos-=ADSR_SR;
+          if (pos<0) {
+            pos=0;
+            lastPos=4;
+          }
+          break;
+        case 3: // release
+          pos-=ADSR_RR;
+          if (pos<0) {
+            pos=0;
+            lastPos=4;
+          }
+          break;
+        case 4: // end
+          pos=0;
+          if (!linger) has=false;
+          break;
       }
+      val=ADSR_LOW+((pos+(ADSR_HIGH-ADSR_LOW)*pos)>>8);
+    }
+    if (type==2) { // LFO
+      lfoPos+=LFO_SPEED;
+      lfoPos&=1023;
+
+      int lfoOut=0;
+      switch (LFO_WAVE&3) {
+        case 0: // triangle
+          lfoOut=((lfoPos&512)?(1023-lfoPos):(lfoPos))>>1;
+          break;
+        case 1: // saw
+          lfoOut=lfoPos>>2;
+          break;
+        case 2: // pulse
+          lfoOut=(lfoPos&512)?255:0;
+          break;
+      }
+      val=ADSR_LOW+((lfoOut+(ADSR_HIGH-ADSR_LOW)*lfoOut)>>8);
     }
   }
 }
@@ -93,6 +176,66 @@ void DivMacroInt::next() {
     }
   }
 }
+
+#define CONSIDER(x,y) \
+  case y: \
+    x.masked=enabled; \
+    break;
+
+#define CONSIDER_OP(oi,o) \
+  CONSIDER(op[oi].am,0+o) \
+  CONSIDER(op[oi].ar,1+o) \
+  CONSIDER(op[oi].dr,2+o) \
+  CONSIDER(op[oi].mult,3+o) \
+  CONSIDER(op[oi].rr,4+o) \
+  CONSIDER(op[oi].sl,5+o) \
+  CONSIDER(op[oi].tl,6+o) \
+  CONSIDER(op[oi].dt2,7+o) \
+  CONSIDER(op[oi].rs,8+o) \
+  CONSIDER(op[oi].dt,9+o) \
+  CONSIDER(op[oi].d2r,10+o) \
+  CONSIDER(op[oi].ssg,11+o) \
+  CONSIDER(op[oi].dam,12+o) \
+  CONSIDER(op[oi].dvb,13+o) \
+  CONSIDER(op[oi].egt,14+o) \
+  CONSIDER(op[oi].ksl,15+o) \
+  CONSIDER(op[oi].sus,16+o) \
+  CONSIDER(op[oi].vib,17+o) \
+  CONSIDER(op[oi].ws,18+o) \
+  CONSIDER(op[oi].ksr,19+o)
+
+void DivMacroInt::mask(unsigned char id, bool enabled) {
+  switch (id) {
+    CONSIDER(vol,0)
+    CONSIDER(arp,1)
+    CONSIDER(duty,2)
+    CONSIDER(wave,3)
+    CONSIDER(pitch,4)
+    CONSIDER(ex1,5)
+    CONSIDER(ex2,6)
+    CONSIDER(ex3,7)
+    CONSIDER(alg,8)
+    CONSIDER(fb,9)
+    CONSIDER(fms,10)
+    CONSIDER(ams,11)
+    CONSIDER(panL,12)
+    CONSIDER(panR,13)
+    CONSIDER(phaseReset,14)
+    CONSIDER(ex4,15)
+    CONSIDER(ex5,16)
+    CONSIDER(ex6,17)
+    CONSIDER(ex7,18)
+    CONSIDER(ex8,19)
+
+    CONSIDER_OP(0,0x20)
+    CONSIDER_OP(2,0x40)
+    CONSIDER_OP(1,0x60)
+    CONSIDER_OP(3,0x80)
+  }
+}
+
+#undef CONSIDER_OP
+#undef CONSIDER
 
 void DivMacroInt::release() {
   released=true;
@@ -253,7 +396,14 @@ void DivMacroInt::init(DivInstrument* which) {
   for (size_t i=0; i<macroListLen; i++) {
     if (macroSource[i]!=NULL) {
       macroList[i]->prepare(*macroSource[i],e);
-      hasRelease=(macroSource[i]->rel<macroSource[i]->len);
+      // check ADSR mode
+      if ((macroSource[i]->open&6)==4) {
+        hasRelease=false;
+      } else if ((macroSource[i]->open&6)==2) {
+        hasRelease=true;
+      } else {
+        hasRelease=(macroSource[i]->rel<macroSource[i]->len);
+      }
     } else {
       hasRelease=false;
     }
@@ -372,3 +522,5 @@ DivMacroStruct* DivMacroInt::structByName(const String& name) {
 
   return NULL;
 }
+
+#undef CONSIDER

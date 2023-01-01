@@ -19,8 +19,8 @@
 
 #ifndef _YM2610SHARED_H
 #define _YM2610SHARED_H
+
 #include "fmshared_OPN.h"
-#include "../macroInt.h"
 #include "../engine.h"
 #include "../../ta-log.h"
 #include "ay.h"
@@ -44,88 +44,13 @@ class DivYM2610Interface: public ymfm::ymfm_interface {
       sampleBank(0) {}
 };
 
-template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
+class DivPlatformYM2610Base: public DivPlatformOPN {
   protected:
-    struct Channel {
-      DivInstrumentFM state;
-      unsigned char freqH, freqL;
-      int freq, baseFreq, pitch, pitch2, portaPauseFreq, note, ins;
-      unsigned char psgMode, autoEnvNum, autoEnvDen;
-      signed char konCycles;
-      bool active, insChanged, freqChanged, keyOn, keyOff, portaPause, inPorta, furnacePCM, hardReset, opMaskChanged;
-      int vol, outVol;
-      int sample;
-      unsigned char pan, opMask;
-      int macroVolMul;
-      DivMacroInt std;
-      void macroInit(DivInstrument* which) {
-        std.init(which);
-        pitch2=0;
-      }
-      Channel():
-        freqH(0),
-        freqL(0),
-        freq(0),
-        baseFreq(0),
-        pitch(0),
-        pitch2(0),
-        portaPauseFreq(0),
-        note(0),
-        ins(-1),
-        psgMode(1),
-        autoEnvNum(0),
-        autoEnvDen(0),
-        active(false),
-        insChanged(true),
-        freqChanged(false),
-        keyOn(false),
-        keyOff(false),
-        portaPause(false),
-        inPorta(false),
-        furnacePCM(false),
-        hardReset(false),
-        opMaskChanged(false),
-        vol(0),
-        outVol(15),
-        sample(-1),
-        pan(3),
-        opMask(15),
-        macroVolMul(255) {}
-    };
+    OPNChannelStereo chan[16];
+    DivDispatchOscBuffer* oscBuf[16];
+    bool isMuted[16];
 
-    struct OpChannel {
-      DivMacroInt std;
-      unsigned char freqH, freqL;
-      int freq, baseFreq, pitch, pitch2, portaPauseFreq, ins;
-      signed char konCycles;
-      bool active, insChanged, freqChanged, keyOn, keyOff, portaPause, inPorta, mask;
-      int vol;
-      unsigned char pan;
-      // UGLY
-      OpChannel():
-        freqH(0),
-        freqL(0),
-        freq(0),
-        baseFreq(0),
-        pitch(0),
-        pitch2(0),
-        portaPauseFreq(0),
-        ins(-1),
-        active(false),
-        insChanged(true),
-        freqChanged(false),
-        keyOn(false),
-        keyOff(false),
-        portaPause(false),
-        inPorta(false),
-        mask(true),
-        vol(0),
-        pan(3) {}
-    };
-    Channel chan[ChanNum];
-    DivDispatchOscBuffer* oscBuf[ChanNum];
-    bool isMuted[ChanNum];
-
+    ym3438_t fm_nuked;
     ymfm::ym2610b* fm;
     ymfm::ym2610b::output_data fmout;
     DivPlatformAY8910* ay;
@@ -141,13 +66,12 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
 
     unsigned char sampleBank;
   
-    bool extMode;
+    bool extMode, noExtMacros;
+
+    bool sampleLoaded[2][256];
   
     unsigned char writeADPCMAOff, writeADPCMAOn;
     int globalADPCMAVolume;
-
-    const int extChanOffs, psgChanOffs, adpcmAChanOffs, adpcmBChanOffs;
-    const int chanNum=ChanNum;
 
     double NOTE_OPNB(int ch, int note) {
       if (ch>=adpcmBChanOffs) { // ADPCM
@@ -171,6 +95,9 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       writeADPCMAOff=0;
       writeADPCMAOn=0;
       globalADPCMAVolume=0x3f;
+
+      OPN2_Reset(&fm_nuked);
+      OPN2_SetChipType(&fm_nuked,ym3438_mode_opn);
 
       ay->reset();
       ay->getRegisterWrites().clear();
@@ -204,18 +131,34 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       return index == 0 ? 16777216 : index == 1 ? 16777216 : 0;
     }
 
+    const char* getSampleMemName(int index=0) {
+      return index == 0 ? "ADPCM-A" : index == 1 ? "ADPCM-B" : NULL;
+    }
+
     size_t getSampleMemUsage(int index) {
       return index == 0 ? adpcmAMemLen : index == 1 ? adpcmBMemLen : 0;
     }
 
-    void renderSamples() {
+    bool isSampleLoaded(int index, int sample) {
+      if (index<0 || index>1) return false;
+      if (sample<0 || sample>255) return false;
+      return sampleLoaded[index][sample];
+    }
+
+    void renderSamples(int sysID) {
       memset(adpcmAMem,0,getSampleMemCapacity(0));
       memset(sampleOffA,0,256*sizeof(unsigned int));
       memset(sampleOffB,0,256*sizeof(unsigned int));
+      memset(sampleLoaded,0,256*2*sizeof(bool));
 
       size_t memPos=0;
       for (int i=0; i<parent->song.sampleLen; i++) {
         DivSample* s=parent->song.sample[i];
+        if (!s->renderOn[0][sysID]) {
+          sampleOffA[i]=0;
+          continue;
+        }
+
         int paddedLen=(s->lengthA+255)&(~0xff);
         if ((memPos&0xf00000)!=((memPos+paddedLen)&0xf00000)) {
           memPos=(memPos+0xfffff)&0xf00000;
@@ -229,6 +172,7 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
           logW("out of ADPCM-A memory for sample %d!",i);
         } else {
           memcpy(adpcmAMem+memPos,s->dataA,paddedLen);
+          sampleLoaded[0][i]=true;
         }
         sampleOffA[i]=memPos;
         memPos+=paddedLen;
@@ -240,6 +184,11 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       memPos=0;
       for (int i=0; i<parent->song.sampleLen; i++) {
         DivSample* s=parent->song.sample[i];
+        if (!s->renderOn[1][sysID]) {
+          sampleOffB[i]=0;
+          continue;
+        }
+
         int paddedLen=(s->lengthB+255)&(~0xff);
         if ((memPos&0xf00000)!=((memPos+paddedLen)&0xf00000)) {
           memPos=(memPos+0xfffff)&0xf00000;
@@ -253,6 +202,7 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
           logW("out of ADPCM-B memory for sample %d!",i);
         } else {
           memcpy(adpcmBMem+memPos,s->dataB,paddedLen);
+          sampleLoaded[1][i]=true;
         }
         sampleOffB[i]=memPos;
         memPos+=paddedLen;
@@ -269,8 +219,11 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
           chipClock=8000000.0;
           break;
       }
-      rate=chipClock/16;
-      for (int i=0; i<ChanNum; i++) {
+      CHECK_CUSTOM_CLOCK;
+      noExtMacros=flags.getBool("noExtMacros",false);
+      fbAllOps=flags.getBool("fbAllOps",false);
+      rate=fm->sample_rate(chipClock);
+      for (int i=0; i<16; i++) {
         oscBuf[i]->rate=rate;
       }
     }
@@ -280,7 +233,7 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       ayFlags.set("chipType",1);
       dumpWrites=false;
       skipRegisterWrites=false;
-      for (int i=0; i<ChanNum; i++) {
+      for (int i=0; i<16; i++) {
         isMuted[i]=false;
         oscBuf[i]=new DivDispatchOscBuffer;
       }
@@ -292,7 +245,7 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       iface.adpcmBMem=adpcmBMem;
       iface.sampleBank=0;
       fm=new ymfm::ym2610b(iface);
-      fm->set_fidelity(ymfm::OPN_FIDELITY_MAX);
+      fm->set_fidelity(ymfm::OPN_FIDELITY_MED);
       setFlags(flags);
       // YM2149, 2MHz
       ay=new DivPlatformAY8910(true,chipClock,32);
@@ -302,7 +255,7 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
     }
 
     void quit() {
-      for (int i=0; i<ChanNum; i++) {
+      for (int i=0; i<16; i++) {
         delete oscBuf[i];
       }
       ay->quit();
@@ -311,12 +264,8 @@ template<int ChanNum> class DivPlatformYM2610Base: public DivPlatformOPN {
       delete[] adpcmBMem;
     }
 
-    DivPlatformYM2610Base(int ext, int psg, int adpcmA, int adpcmB):
-      DivPlatformOPN(9440540.0, 72, 32),
-      extChanOffs(ext),
-      psgChanOffs(psg),
-      adpcmAChanOffs(adpcmA),
-      adpcmBChanOffs(adpcmB) {}
+    DivPlatformYM2610Base(int ext, int psg, int adpcmA, int adpcmB, int chanCount):
+      DivPlatformOPN(ext,psg,adpcmA,adpcmB,chanCount,9440540.0, 72, 32) {}
 };
 
 #endif

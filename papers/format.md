@@ -32,7 +32,21 @@ these fields are 0 in format versions prior to 100 (0.6pre1).
 
 the format versions are:
 
-- 119: Furnace dev119 (still not released)
+- 133: Furnace 0.6pre3
+- 132: Furnace 0.6pre2
+- 131: Furnace dev131
+- 130: Furnace dev130
+- 129: Furnace dev129
+- 128: Furnace dev128
+- 127: Furnace dev127
+- 126: Furnace dev126
+- 125: Furnace dev125
+- 124: Furnace dev124
+- 123: Furnace dev123
+- 122: Furnace dev122
+- 121: Furnace dev121
+- 120: Furnace dev120
+- 119: Furnace dev119
 - 118: Furnace dev118
 - 117: Furnace dev117
 - 116: Furnace 0.6pre1.5
@@ -204,8 +218,8 @@ size | description
      |   - 0x8a: FDS - 1 channel
      |   - 0x8b: MMC5 - 3 channels
      |   - 0x8c: Namco 163 - 8 channels
-     |   - 0x8d: OPN (YM2203) - 6 channels
-     |   - 0x8e: PC-98 (YM2608) - 16 channels
+     |   - 0x8d: YM2203 - 6 channels
+     |   - 0x8e: YM2608 - 16 channels
      |   - 0x8f: OPL (YM3526) - 9 channels
      |   - 0x90: OPL2 (YM3812) - 9 channels
      |   - 0x91: OPL3 (YMF262) - 18 channels
@@ -245,8 +259,8 @@ size | description
      |   - 0xb3: Yamaha Y8950 drums - 12 channels
      |   - 0xb4: Konami SCC+ - 5 channels
      |   - 0xb5: tildearrow Sound Unit - 8 channels
-     |   - 0xb6: OPN extended - 9 channels
-     |   - 0xb7: PC-98 extended - 19 channels
+     |   - 0xb6: YM2203 extended - 9 channels
+     |   - 0xb7: YM2608 extended - 19 channels
      |   - 0xb8: YMZ280B - 8 channels
      |   - 0xb9: Namco WSG - 3 channels
      |   - 0xba: Namco 15xx - 8 channels
@@ -258,11 +272,14 @@ size | description
      |   - 0xc0: PCM DAC - 1 channel
      |   - 0xc1: YM2612 CSM - 10 channels
      |   - 0xc2: Neo Geo CSM (YM2610) - 18 channels
-     |   - 0xc3: OPN CSM - 10 channels
-     |   - 0xc4: PC-98 CSM - 20 channels
+     |   - 0xc3: YM2203 CSM - 10 channels
+     |   - 0xc4: YM2608 CSM - 20 channels
      |   - 0xc5: YM2610B CSM - 20 channels
+     |   - 0xc6: K007232 - 2 channels
+     |   - 0xc7: GA20 - 4 channels
      |   - 0xde: YM2610B extended - 19 channels
      |   - 0xe0: QSound - 19 channels
+     |   - 0xfc: Pong - 1 channel
      |   - 0xfd: Dummy System - 8 channels
      |   - 0xfe: reserved for development
      |   - 0xff: reserved for development
@@ -350,7 +367,9 @@ size | description
   1  | 0B/0D effect treatment (>=113) or reserved
   1  | automatic system name detection (>=115) or reserved
      | - this one isn't a compatibility flag, but it's here for convenience...
-  3  | reserved
+  1  | disable sample macro (>=117) or reserved
+  1  | broken outVol episode 2 (>=121) or reserved
+  1  | old arpeggio strategy (>=130) or reserved
  --- | **virtual tempo data**
   2  | virtual tempo numerator of first song (>=96) or reserved
   2  | virtual tempo denominator of first song (>=96) or reserved
@@ -430,13 +449,34 @@ clock=4000000
 stereo=true
 ```
 
-# instrument
+# instrument (>=127)
+
+Furnace dev127 and higher use the new instrument format.
+
+```
+size | description
+-----|------------------------------------
+  4  | "INS2" block ID
+  4  | size of this block
+  2  | format version
+  2  | instrument type
+ ??? | features...
+```
+
+see [newIns.md](newIns.md) for more information.
+
+# old instrument (<127)
 
 notes:
 
 - the entire instrument is stored, regardless of instrument type.
 - the macro range varies depending on the instrument type.
 - "macro open" indicates whether the macro is collapsed or not in the instrument editor.
+  - as of format version 120, bit 1-2 indicates macro mode:
+    - 0: sequence (normal)
+    - 1: ADSR
+    - 2: LFO
+  - see sub-section for information on how to interpret parameters.
 - FM operator order is:
   - 1/3/2/4 (internal order) for OPN, OPM, OPZ and OPL 4-op
   - 1/2/?/? (? = unused) for OPL 2-op and OPLL
@@ -496,6 +536,7 @@ size | description
      | - 41: YMZ280B
      | - 42: RF5C68
      | - 43: MSM5232
+     | - 44: T6W28
   1  | reserved
  STR | instrument name
  --- | **FM instrument data**
@@ -1024,6 +1065,29 @@ size | description
   1  | KSR macro delay
 ```
 
+## interpreting macro mode values
+
+- sequence (normal): I think this is obvious...
+- ADSR:
+  - `val[0]`: bottom
+  - `val[1]`: top
+  - `val[2]`: attack
+  - `val[3]`: hold time
+  - `val[4]`: decay
+  - `val[5]`: sustain level
+  - `val[6]`: sustain hold time
+  - `val[7]`: decay 2
+  - `val[8]`: release
+- LFO:
+  - `val[11]`: speed
+  - `val[12]`: waveform
+    - 0: triangle
+    - 1: saw
+    - 2: pulse
+  - `val[13]`: phase
+  - `val[14]`: loop
+  - `val[15]`: global (not sure how will I implement this)
+
 # wavetable
 
 ```
@@ -1062,7 +1126,13 @@ size | description
      | - 9: BRR (SNES)
      | - 10: VOX
      | - 16: 16-bit PCM
-  3  | reserved
+  1  | loop direction (>=123) or reserved
+     | - 0: forward
+     | - 1: backward
+     | - 2: ping-pong
+  1  | flags (>=129) or reserved
+     | - 0: BRR emphasis
+  1  | reserved
   4  | loop start
      | - -1 means no loop
   4  | loop end
@@ -1374,7 +1444,7 @@ chips which aren't on this list don't have any flags.
 - bit 4-6: channels (int)
 - bit 7: multiplex (bool)
 
-## 0x8d: OPN (YM2203) and 0xb6: OPN extended
+## 0x8d: YM2203 and 0xb6: YM2203 extended
 
 - bit 0-4: clockSel (int)
   - 0: NTSC
@@ -1388,7 +1458,7 @@ chips which aren't on this list don't have any flags.
   - 1: /3
   - 2: /2
 
-## 0x8e: PC-98 (YM2608) and 0xb7: PC-98 extended
+## 0x8e: YM2608 and 0xb7: YM2608 extended
 
 - bit 0-4: clockSel (int)
   - 0: 8MHz

@@ -119,7 +119,7 @@ void FurnaceGUI::makeUndo(ActionType action) {
       for (int i=0; i<e->getTotalChannelCount(); i++) {
         DivPattern* p=e->curPat[i].getPattern(e->curOrders->ord[i][curOrder],false);
         for (int j=0; j<e->curSubSong->patLen; j++) {
-          for (int k=0; k<32; k++) {
+          for (int k=0; k<DIV_MAX_COLS; k++) {
             if (p->data[j][k]!=oldPat[i]->data[j][k]) {
               s.pat.push_back(UndoPatternData(subSong,i,e->curOrders->ord[i][curOrder],j,k,oldPat[i]->data[j][k],p->data[j][k]));
             }
@@ -565,6 +565,8 @@ void FurnaceGUI::doPaste(PasteMode mode, int arg) {
   if (settings.cursorPastePos) {
     cursor.y=j;
     if (cursor.y>=e->curSubSong->patLen) cursor.y=e->curSubSong->patLen-1;
+    selStart=cursor;
+    selEnd=cursor;
     updateScroll(cursor.y);
   }
 

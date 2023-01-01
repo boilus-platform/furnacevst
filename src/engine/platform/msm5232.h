@@ -22,41 +22,20 @@
 
 #include "../dispatch.h"
 #include <queue>
-#include "../macroInt.h"
 #include "sound/oki/msm5232.h"
 
 class DivPlatformMSM5232: public DivDispatch {
-  struct Channel {
-    int freq, baseFreq, pitch, pitch2, note;
-    int ins;
-    bool active, insChanged, freqChanged, keyOn, keyOff, inPorta, noise;
-    signed char vol, outVol;
-    DivMacroInt std;
-    void macroInit(DivInstrument* which) {
-      std.init(which);
-      pitch2=0;
-    }
+  struct Channel: public SharedChannel<signed char> {
+    bool noise;
     Channel():
-      freq(0),
-      baseFreq(0),
-      pitch(0),
-      pitch2(0),
-      note(0),
-      ins(-1),
-      active(false),
-      insChanged(true),
-      freqChanged(false),
-      keyOn(false),
-      keyOff(false),
-      inPorta(false),
-      noise(false),
-      vol(127),
-      outVol(127) {}
+      SharedChannel<signed char>(127),
+      noise(false) {}
   };
   Channel chan[8];
   DivDispatchOscBuffer* oscBuf[8];
   int partVolume[8];
   int initPartVolume[8];
+  int clockDriftLFOWave[256];
   double capacitance[8];
   bool isMuted[8];
   bool updateGroup[2];
@@ -73,7 +52,8 @@ class DivPlatformMSM5232: public DivDispatch {
   };
   std::queue<QueuedWrite> writes;
 
-  int cycles, curChan, delay, detune;
+  int cycles, curChan, delay, detune, clockDriftAccum;
+  unsigned int clockDriftLFOPos, clockDriftLFOSpeed;
   short temp[16];
   msm5232_device* msm;
   unsigned char regPool[128];

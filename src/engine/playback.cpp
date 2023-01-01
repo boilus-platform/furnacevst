@@ -206,6 +206,13 @@ const char* cmdName[]={
   "SNES_ECHO_FEEDBACK",
   "SNES_ECHO_FIR",
 
+  "NES_ENV_MODE",
+  "NES_LENGTH",
+  "NES_COUNT_MODE",
+
+  "MACRO_OFF",
+  "MACRO_ON",
+
   "ALWAYS_SET_VOLUME"
 };
 
@@ -447,7 +454,7 @@ void DivEngine::processRow(int i, bool afterDelay) {
     }
     if (returnAfterPre) return;
   } else {
-    logV("honoring delay at position %d",whatRow);
+    //logV("honoring delay at position %d",whatRow);
   }
 
   if (chan[i].delayLocked) return;
@@ -820,6 +827,12 @@ void DivEngine::processRow(int i, bool afterDelay) {
         chan[i].volSpeed=-effectVal;
         dispatchCmd(DivCommand(DIV_CMD_HINT_VOL_SLIDE,i,chan[i].volSpeed));
         break;
+      case 0xf5: // disable macro
+        dispatchCmd(DivCommand(DIV_CMD_MACRO_OFF,i,effectVal&0xff));
+        break;
+      case 0xf6: // enable macro
+        dispatchCmd(DivCommand(DIV_CMD_MACRO_ON,i,effectVal&0xff));
+        break;
       case 0xf8: // single volume ramp up
         chan[i].volume=MIN(chan[i].volume+effectVal*256,chan[i].volMax);
         dispatchCmd(DivCommand(DIV_CMD_VOLUME,i,chan[i].volume>>8));
@@ -844,7 +857,8 @@ void DivEngine::processRow(int i, bool afterDelay) {
         break;
       
       case 0xff: // stop song
-        shallStop=true;
+        shallStopSched=true;
+        logV("scheduling stop");
         break;
     }
   }
@@ -958,6 +972,20 @@ void DivEngine::nextRow() {
     printf("| %.2x:%s | \x1b[1;33m%3d%s\x1b[m\n",curOrder,pb1,curRow,pb3);
   }
 
+  if (curSubSong->hilightA>0) {
+    if ((curRow%curSubSong->hilightA)==0) {
+      pendingMetroTick=1;
+      elapsedBeats++;
+    }
+  }
+  if (curSubSong->hilightB>0) {
+    if ((curRow%curSubSong->hilightB)==0) {
+      pendingMetroTick=2;
+      elapsedBars++;
+      elapsedBeats=0;
+    }
+  }
+
   prevOrder=curOrder;
   prevRow=curRow;
 
@@ -1026,8 +1054,10 @@ void DivEngine::nextRow() {
     if (!(pat->data[curRow][0]==0 && pat->data[curRow][1]==0)) {
       if (pat->data[curRow][0]!=100 && pat->data[curRow][0]!=101 && pat->data[curRow][0]!=102) {
         if (!chan[i].legato) {
+          bool wantPreNote=false;
           if (disCont[dispatchOfChan[i]].dispatch!=NULL) {
-            if (disCont[dispatchOfChan[i]].dispatch->getWantPreNote()) dispatchCmd(DivCommand(DIV_CMD_PRE_NOTE,i,ticks));
+            wantPreNote=disCont[dispatchOfChan[i]].dispatch->getWantPreNote();
+            if (wantPreNote) dispatchCmd(DivCommand(DIV_CMD_PRE_NOTE,i,ticks));
           }
 
           if (song.oneTickCut) {
@@ -1045,7 +1075,7 @@ void DivEngine::nextRow() {
                 }
               }
             }
-            if (doPrepareCut) chan[i].cut=ticks;
+            if (doPrepareCut && !wantPreNote && chan[i].cut<=0) chan[i].cut=ticks;
           }
         }
       }
@@ -1132,7 +1162,11 @@ bool DivEngine::nextTick(bool noAccum, bool inhibitLowLat) {
           tempoAccum-=curSubSong->virtualTempoD;
           if (--ticks<=0) {
             ret=endOfSong;
-            if (endOfSong) {
+            if (shallStopSched) {
+              logV("acknowledging scheduled stop");
+              shallStop=true;
+              break;
+            } else if (endOfSong) {
               if (song.loopModality!=2) {
                 playSub(true);
               }
@@ -1143,9 +1177,11 @@ bool DivEngine::nextTick(bool noAccum, bool inhibitLowLat) {
             break;
           }
         }
+        // under no circumstances shall the accumulator become this large
+        if (tempoAccum>1023) tempoAccum=1023;
       }
       // process stuff
-      for (int i=0; i<chans; i++) {
+      if (!shallStop) for (int i=0; i<chans; i++) {
         if (chan[i].rowDelay>0) {
           if (--chan[i].rowDelay==0) {
             processRow(i,true);
@@ -1273,6 +1309,11 @@ bool DivEngine::nextTick(bool noAccum, bool inhibitLowLat) {
         }
       }
     }
+  } else {
+    // still tick the subtick counter
+    if (--subticks<=0) {
+      subticks=tickMult;
+    }
   }
 
   firstTick=false;
@@ -1289,6 +1330,7 @@ bool DivEngine::nextTick(bool noAccum, bool inhibitLowLat) {
     sPreview.dir=false;
     ret=true;
     shallStop=false;
+    shallStopSched=false;
     return ret;
   }
 
@@ -1544,11 +1586,16 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
 
   // logic starts here
   for (int i=0; i<song.systemLen; i++) {
+    // TODO: we may have a problem here
     disCont[i].lastAvail=blip_samples_avail(disCont[i].bb[0]);
     if (disCont[i].lastAvail>0) {
       disCont[i].flush(disCont[i].lastAvail);
     }
-    disCont[i].runtotal=blip_clocks_needed(disCont[i].bb[0],size-disCont[i].lastAvail);
+    if (size<disCont[i].lastAvail) {
+      disCont[i].runtotal=0;
+    } else {
+      disCont[i].runtotal=blip_clocks_needed(disCont[i].bb[0],size-disCont[i].lastAvail);
+    }
     if (disCont[i].runtotal>disCont[i].bbInLen) {
       logV("growing dispatch %d bbIn to %d",i,disCont[i].runtotal+256);
       delete[] disCont[i].bbIn[0];
@@ -1571,7 +1618,7 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
 
   int attempts=0;
   int runLeftG=size<<MASTER_CLOCK_PREC;
-  while (++attempts<100) {
+  while (++attempts<(int)size) {
     // 0. check if we've halted
     if (halted) break;
     // 1. check whether we are done with all buffers
@@ -1580,16 +1627,6 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
     // 2. check whether we gonna tick
     if (cycles<=0) {
       // we have to tick
-      if (!freelance && stepPlay!=-1 && subticks==1) {
-        unsigned int realPos=size-(runLeftG>>MASTER_CLOCK_PREC);
-        if (realPos>=size) realPos=size-1;
-        if (curSubSong->hilightA>0) {
-          if ((curRow%curSubSong->hilightA)==0 && ticks==1) metroTick[realPos]=1;
-        }
-        if (curSubSong->hilightB>0) {
-          if ((curRow%curSubSong->hilightB)==0 && ticks==1) metroTick[realPos]=2;
-        }
-      }
       if (nextTick()) {
         lastLoopPos=size-(runLeftG>>MASTER_CLOCK_PREC);
         logD("last loop pos: %d for a size of %d and runLeftG of %d",lastLoopPos,size,runLeftG);
@@ -1605,6 +1642,12 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
             break;
           }
         }
+      }
+      if (pendingMetroTick) {
+        unsigned int realPos=size-(runLeftG>>MASTER_CLOCK_PREC);
+        if (realPos>=size) realPos=size-1;
+        metroTick[realPos]=pendingMetroTick;
+        pendingMetroTick=0;
       }
     } else {
       // 3. tick the clock and fill buffers as needed
@@ -1634,7 +1677,7 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
   }
 
   //logD("attempts: %d",attempts);
-  if (attempts>=100) {
+  if (attempts>=(int)size) {
     logE("hang detected! stopping! at %d seconds %d micro",totalSeconds,totalTicks);
     freelance=false;
     playing=false;
@@ -1643,6 +1686,10 @@ void DivEngine::nextBuf(float** in, float** out, int inChans, int outChans, unsi
   totalProcessed=size-(runLeftG>>MASTER_CLOCK_PREC);
 
   for (int i=0; i<song.systemLen; i++) {
+    if (size<disCont[i].lastAvail) {
+      logW("%d: size<lastAvail! %d<%d",i,size,disCont[i].lastAvail);
+      continue;
+    }
     disCont[i].fillBuf(disCont[i].runtotal,disCont[i].lastAvail,size-disCont[i].lastAvail);
   }
 

@@ -19,35 +19,19 @@
 
 #ifndef _MSM6295_H
 #define _MSM6295_H
+
 #include "../dispatch.h"
-#include "../macroInt.h"
 #include <queue>
 #include "vgsound_emu/src/msm6295/msm6295.hpp"
 
 class DivPlatformMSM6295: public DivDispatch, public vgsound_emu_mem_intf {
   protected:
-    struct Channel {
-      int note, ins;
-      signed char konCycles;
-      bool active, insChanged, freqChanged, keyOn, keyOff, furnacePCM, hardReset;
-      int vol, outVol;
+    struct Channel: public SharedChannel<int> {
+      bool furnacePCM;
       int sample;
-      DivMacroInt std;
-      void macroInit(DivInstrument* which) {
-        std.init(which);
-      }
       Channel():
-        note(0),
-        ins(-1),
-        active(false),
-        insChanged(true),
-        freqChanged(false),
-        keyOn(false),
-        keyOff(false),
+        SharedChannel<int>(8),
         furnacePCM(false),
-        hardReset(false),
-        vol(8),
-        outVol(8),
         sample(-1) {}
     };
     Channel chan[4];
@@ -68,6 +52,7 @@ class DivPlatformMSM6295: public DivDispatch, public vgsound_emu_mem_intf {
 
     unsigned char* adpcmMem;
     size_t adpcmMemLen;
+    bool sampleLoaded[256];
     unsigned char sampleBank;
 
     int delay, updateOsc;
@@ -101,7 +86,8 @@ class DivPlatformMSM6295: public DivDispatch, public vgsound_emu_mem_intf {
     virtual const void* getSampleMem(int index) override;
     virtual size_t getSampleMemCapacity(int index) override;
     virtual size_t getSampleMemUsage(int index) override;
-    virtual void renderSamples() override;
+    virtual bool isSampleLoaded(int index, int sample) override;
+    virtual void renderSamples(int chipID) override;
 
     virtual int init(DivEngine* parent, int channels, int sugRate, const DivConfig& flags) override;
     virtual void quit() override;

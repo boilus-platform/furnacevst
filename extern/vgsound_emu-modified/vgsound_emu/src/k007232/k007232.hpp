@@ -11,7 +11,9 @@
 
 #pragma once
 
-#include "../core/util.hpp"
+#include "../core/core.hpp"
+
+using namespace vgsound_emu;
 
 class k007232_intf : public vgsound_emu_core
 {
@@ -85,8 +87,8 @@ class k007232_core : public vgsound_emu_core
 			: vgsound_emu_core("k007232")
 			, m_voice{*this, *this}
 			, m_intf(intf)
-			, m_reg{0}
 		{
+			m_reg.fill(0);
 		}
 
 		// host accessors
@@ -109,7 +111,7 @@ class k007232_core : public vgsound_emu_core
 
 		k007232_intf &m_intf;  // common memory interface
 
-		std::array<u8, 16> m_reg = {0};	 // register pool
+		std::array<u8, 16> m_reg;	 // register pool
 };
 
 #endif

@@ -18,7 +18,6 @@
  */
 
 // for suck's fake Clang extension!
-#include <imgui.h>
 #define _USE_MATH_DEFINES
 #include "gui.h"
 #include "../ta-log.h"
@@ -128,19 +127,23 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
   if (ImGui::IsItemClicked()) {
     startSelection(0,0,i,true);
   }
+  if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+    ImGui::InhibitInertialScroll();
+    NOTIFY_LONG_HOLD;
+  }
   ImGui::PopStyleColor();
   // for each column
   for (int j=0; j<chans; j++) {
     // check if channel is not hidden
     if (!e->curSubSong->chanShow[j]) {
-      patChanX[j]=ImGui::GetCursorPosX();
+      patChanX[j]=ImGui::GetCursorScreenPos().x;
       continue;
     }
     int chanVolMax=e->getMaxVolumeChan(j);
     if (chanVolMax<1) chanVolMax=1;
     const DivPattern* pat=patCache[j];
     ImGui::TableNextColumn();
-    patChanX[j]=ImGui::GetCursorPosX();
+    patChanX[j]=ImGui::GetCursorScreenPos().x;
 
     // selection highlight flags
     int sel1XSum=sel1.xCoarse*32+sel1.xFine;
@@ -177,6 +180,10 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
       updateSelection(j,0,i);
+    }
+    if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+      ImGui::InhibitInertialScroll();
+      NOTIFY_LONG_HOLD;
     }
     ImGui::PopStyleColor();
 
@@ -218,6 +225,10 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
         updateSelection(j,1,i);
       }
+      if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+        ImGui::InhibitInertialScroll();
+        NOTIFY_LONG_HOLD;
+      }
       ImGui::PopStyleColor();
     }
 
@@ -251,6 +262,10 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
       }
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
         updateSelection(j,2,i);
+      }
+      if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+        ImGui::InhibitInertialScroll();
+        NOTIFY_LONG_HOLD;
       }
       ImGui::PopStyleColor();
     }
@@ -297,6 +312,10 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
           updateSelection(j,index-1,i);
         }
+        if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+          ImGui::InhibitInertialScroll();
+          NOTIFY_LONG_HOLD;
+        }
 
         // effect value
         if (pat->data[i][index+1]==-1) {
@@ -323,6 +342,10 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
           updateSelection(j,index,i);
         }
+        if (ImGui::IsItemActive() && CHECK_LONG_HOLD) {
+          ImGui::InhibitInertialScroll();
+          NOTIFY_LONG_HOLD;
+        }
         ImGui::PopStyleColor();
       }
     }
@@ -331,7 +354,7 @@ inline void FurnaceGUI::patternRow(int i, bool isPlaying, float lineHeight, int 
     ImGui::PopStyleColor();
   }
   ImGui::TableNextColumn();
-  patChanX[chans]=ImGui::GetCursorPosX();
+  patChanX[chans]=ImGui::GetCursorScreenPos().x;
 }
 
 void FurnaceGUI::drawPattern() {
@@ -376,8 +399,8 @@ void FurnaceGUI::drawPattern() {
   }
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(0.0f,0.0f));
   if (mobileUI) {
-    patWindowPos=(portrait?ImVec2(0.0f,(mobileMenuPos*-0.65*scrH*dpiScale)):ImVec2((0.16*scrH*dpiScale)+0.5*scrW*dpiScale*mobileMenuPos,0.0f));
-    patWindowSize=(portrait?ImVec2(scrW*dpiScale,scrH*dpiScale-(0.16*scrW*dpiScale)-(pianoOpen?(0.4*scrW*dpiScale):0.0f)):ImVec2(scrW*dpiScale-(0.16*scrH*dpiScale),scrH*dpiScale-(pianoOpen?(0.3*scrH*dpiScale):0.0f)));
+    patWindowPos=(portrait?ImVec2(0.0f,(mobileMenuPos*-0.65*canvasH)+(0.12*canvasW)):ImVec2((0.16*canvasH)+0.5*canvasW*mobileMenuPos,0.0f));
+    patWindowSize=(portrait?ImVec2(canvasW,canvasH-(0.16*canvasW)-(0.12*canvasW)-(pianoOpen?(0.4*canvasW):0.0f)):ImVec2(canvasW-(0.16*canvasH),canvasH-(pianoOpen?(0.3*canvasH):0.0f)));
     ImGui::SetNextWindowPos(patWindowPos);
     ImGui::SetNextWindowSize(patWindowSize);
   }
@@ -403,6 +426,12 @@ void FurnaceGUI::drawPattern() {
     ImGui::PushStyleColor(ImGuiCol_Header,uiColors[GUI_COLOR_PATTERN_SELECTION]);
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered,uiColors[GUI_COLOR_PATTERN_SELECTION_HOVER]);
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,uiColors[GUI_COLOR_PATTERN_SELECTION_ACTIVE]);
+    if (settings.centerPattern) {
+      float centerOff=(ImGui::GetContentRegionAvail().x-lastPatternWidth)*0.5;
+      if (centerOff>0.0f) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX()+centerOff);
+      }
+    }
     if (ImGui::BeginTable("PatternView",displayChans+2,ImGuiTableFlags_BordersInnerV|ImGuiTableFlags_ScrollX|ImGuiTableFlags_ScrollY|ImGuiTableFlags_NoPadInnerX|ImGuiTableFlags_NoBordersInFrozenArea)) {
       ImGui::TableSetupColumn("pos",ImGuiTableColumnFlags_WidthFixed);
       char chanID[2048];
@@ -427,10 +456,11 @@ void FurnaceGUI::drawPattern() {
       }
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
+      float lpwStart=ImGui::GetCursorPosX();
       if (ImGui::Selectable((extraChannelButtons==2)?" --##ExtraChannelButtons":" ++##ExtraChannelButtons",false,ImGuiSelectableFlags_NoPadWithHalfSpacing,ImVec2(0.0f,lineHeight+1.0f*dpiScale))) {
         if (++extraChannelButtons>2) extraChannelButtons=0;
       }
-      if (ImGui::IsItemHovered()) {
+      if (ImGui::IsItemHovered() && !mobileUI) {
         if (extraChannelButtons==2) {
           ImGui::SetTooltip("Pattern names (click to collapse)\nRight-click for visualizer");
         } else if (extraChannelButtons==1) {
@@ -589,7 +619,7 @@ void FurnaceGUI::drawPattern() {
             ImGui::ItemSize(size,ImGui::GetStyle().FramePadding.y);
             if (ImGui::ItemAdd(rect,ImGui::GetID(chanID))) {
               bool hovered=ImGui::ItemHoverable(rect,ImGui::GetID(chanID));
-              ImU32 col=hovered?ImGui::GetColorU32(ImGuiCol_HeaderHovered):ImGui::GetColorU32(ImGuiCol_Header);
+              ImU32 col=(hovered || (mobileUI && ImGui::IsMouseDown(ImGuiMouseButton_Left)))?ImGui::GetColorU32(ImGuiCol_HeaderHovered):ImGui::GetColorU32(ImGuiCol_Header);
               dl->AddRectFilled(rect.Min,rect.Max,col);
               dl->AddText(ImVec2(minLabelArea.x,rect.Min.y),ImGui::GetColorU32(channelTextColor(i)),chanID);
             }
@@ -602,13 +632,13 @@ void FurnaceGUI::drawPattern() {
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?0.25f:0.0f
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?0.25f:0.0f
               ));
               ImU32 fadeCol=ImGui::GetColorU32(ImVec4(
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?0.5f:MIN(1.0f,chanHeadBase.w*keyHit[i]*4.0f)
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?0.5f:MIN(1.0f,chanHeadBase.w*keyHit[i]*4.0f)
               ));
               dl->AddRectFilledMultiColor(rect.Min,rect.Max,fadeCol0,fadeCol0,fadeCol,fadeCol);
               dl->AddLine(ImVec2(rect.Min.x,rect.Max.y),ImVec2(rect.Max.x,rect.Max.y),ImGui::GetColorU32(chanHeadBase),2.0f*dpiScale);
@@ -624,13 +654,13 @@ void FurnaceGUI::drawPattern() {
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?0.5f:MIN(1.0f,0.3f+chanHeadBase.w*keyHit[i]*1.5f)
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?0.5f:MIN(1.0f,0.3f+chanHeadBase.w*keyHit[i]*1.5f)
               ));
               ImU32 fadeCol=ImGui::GetColorU32(ImVec4(
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?0.3f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*1.2f)
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?0.3f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*1.2f)
               ));
               ImVec2 rMin=rect.Min;
               ImVec2 rMax=rect.Max;
@@ -645,7 +675,7 @@ void FurnaceGUI::drawPattern() {
           }
           case 3: // split button
             ImGui::Dummy(ImVec2(1.0f,2.0f*dpiScale));
-            ImGui::SetCursorPosX(minLabelArea.x);
+            //ImGui::SetCursorPosX(minLabelArea.x);
             ImGui::TextUnformatted(chanID);
             ImGui::SameLine();
             ImGui::PushFont(mainFont);
@@ -660,7 +690,7 @@ void FurnaceGUI::drawPattern() {
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?1.0f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*4.0f)
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?1.0f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*4.0f)
               ));
               ImVec2 rMin=rect.Min;
               ImVec2 rMax=rect.Max;
@@ -681,7 +711,7 @@ void FurnaceGUI::drawPattern() {
                 chanHeadBase.x,
                 chanHeadBase.y,
                 chanHeadBase.z,
-                hovered?1.0f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*4.0f)
+                (hovered && (!mobileUI || ImGui::IsMouseDown(ImGuiMouseButton_Left)))?1.0f:MIN(1.0f,0.2f+chanHeadBase.w*keyHit[i]*4.0f)
               ));
               ImVec2 rMin=rect.Min;
               ImVec2 rMax=rect.Max;
@@ -699,23 +729,40 @@ void FurnaceGUI::drawPattern() {
 
         if (extraChannelButtons==0 || settings.channelVolStyle!=0) ImGui::PopStyleVar();
 
-        if (displayTooltip && ImGui::IsItemHovered()) {
+        if (displayTooltip && ImGui::IsItemHovered() && !mobileUI) {
           ImGui::SetTooltip("%s",e->getChannelName(i));
         }
         if (settings.channelFont==0) ImGui::PopFont();
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-          if (settings.soloAction!=1 && soloTimeout>0 && soloChan==i) {
-            e->toggleSolo(i);
-            soloTimeout=0;
-          } else {
-            e->toggleMute(i);
-            soloTimeout=20;
-            soloChan=i;
+        if (mobileUI) {
+          if (ImGui::IsItemHovered()) {
+            if (CHECK_LONG_HOLD) {
+              NOTIFY_LONG_HOLD;
+              e->toggleSolo(i);
+              soloChan=i;
+            }
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::WasInertialScroll()) {
+              if (soloChan!=i) {
+                e->toggleMute(i);
+              } else {
+                soloChan=-1;
+              }
+            }
+          } 
+        } else {
+          if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            if (settings.soloAction!=1 && soloTimeout>0 && soloChan==i) {
+              e->toggleSolo(i);
+              soloTimeout=0;
+            } else {
+              e->toggleMute(i);
+              soloTimeout=20;
+              soloChan=i;
+            }
           }
         }
         if (muted) ImGui::PopStyleColor();
         ImGui::PopStyleColor(4);
-        if (settings.soloAction!=2) if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        if (settings.soloAction!=2 && !mobileUI) if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
           inhibitMenu=true;
           e->toggleSolo(i);
         }
@@ -827,11 +874,11 @@ void FurnaceGUI::drawPattern() {
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
-            ImGui::BeginDisabled(e->curPat[i].effectCols>=8);
+            ImGui::BeginDisabled(e->curPat[i].effectCols>=DIV_MAX_EFFECTS);
             snprintf(chanID,2048,">##_RCH%d",i);
             if (ImGui::SmallButton(chanID)) {
               e->curPat[i].effectCols++;
-              if (e->curPat[i].effectCols>8) e->curPat[i].effectCols=8;
+              if (e->curPat[i].effectCols>DIV_MAX_EFFECTS) e->curPat[i].effectCols=DIV_MAX_EFFECTS;
             }
             ImGui::EndDisabled();
           }
@@ -839,6 +886,7 @@ void FurnaceGUI::drawPattern() {
         }
       }
       ImGui::TableNextColumn();
+      lastPatternWidth=ImGui::GetCursorPosX()-lpwStart+ImGui::GetStyle().ScrollbarSize;
       if (e->hasExtValue()) {
         ImGui::TextColored(uiColors[GUI_COLOR_EE_VALUE]," %.2X",e->getExtValue());
       }
@@ -958,7 +1006,7 @@ void FurnaceGUI::drawPattern() {
     if (fancyPattern) { // visualizer
       e->getCommandStream(cmdStream);
       ImDrawList* dl=ImGui::GetWindowDrawList();
-      ImVec2 off=ImGui::GetWindowPos();
+      ImVec2 off=ImVec2(0.0f,ImGui::GetWindowPos().y);
       
       // commands
       for (DivCommand& i: cmdStream) {
@@ -1202,7 +1250,7 @@ void FurnaceGUI::drawPattern() {
   }
   ImGui::PopStyleVar();
   if (patternOpen) {
-    if (!inhibitMenu && ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("patternActionMenu");
+    if (!inhibitMenu && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("patternActionMenu");
     if (ImGui::BeginPopup("patternActionMenu",ImGuiWindowFlags_NoMove|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoSavedSettings)) {
       editOptions(false);
       ImGui::EndPopup();

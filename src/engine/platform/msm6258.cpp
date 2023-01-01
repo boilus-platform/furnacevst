@@ -150,13 +150,12 @@ int DivPlatformMSM6258::dispatch(DivCommand c) {
         if (!chan[c.chan].std.vol.will) {
           chan[c.chan].outVol=chan[c.chan].vol;
         }
-        sample=ins->amiga.getSample(c.value);
+        if (c.value!=DIV_NOTE_NULL) sample=ins->amiga.getSample(c.value);
         samplePos=0;
         if (sample>=0 && sample<parent->song.sampleLen) {
           //DivSample* s=parent->getSample(chan[c.chan].sample);
           if (c.value!=DIV_NOTE_NULL) {
             chan[c.chan].note=c.value;
-            chan[c.chan].freqChanged=true;
           }
           chan[c.chan].active=true;
           chan[c.chan].keyOn=true;
@@ -167,7 +166,7 @@ int DivPlatformMSM6258::dispatch(DivCommand c) {
         chan[c.chan].sample=-1;
         chan[c.chan].macroInit(NULL);
         chan[c.chan].outVol=chan[c.chan].vol;
-        if ((12*sampleBank+c.value%12)>=parent->song.sampleLen) {
+        if ((12*sampleBank+c.value%12)<0 || (12*sampleBank+c.value%12)>=parent->song.sampleLen) {
           break;
         }
         //DivSample* s=parent->getSample(12*sampleBank+c.value%12);
@@ -242,6 +241,12 @@ int DivPlatformMSM6258::dispatch(DivCommand c) {
     case DIV_CMD_LEGATO: {
       break;
     }
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
+      break;
     case DIV_ALWAYS_SET_VOLUME:
       return 0;
       break;
@@ -350,43 +355,6 @@ void DivPlatformMSM6258::notifyInsChange(int ins) {
 void DivPlatformMSM6258::notifyInsDeletion(void* ins) {
 }
 
-const void* DivPlatformMSM6258::getSampleMem(int index) {
-  return index == 0 ? adpcmMem : NULL;
-}
-
-size_t DivPlatformMSM6258::getSampleMemCapacity(int index) {
-  return index == 0 ? 262144 : 0;
-}
-
-size_t DivPlatformMSM6258::getSampleMemUsage(int index) {
-  return index == 0 ? adpcmMemLen : 0;
-}
-
-void DivPlatformMSM6258::renderSamples() {
-  memset(adpcmMem,0,getSampleMemCapacity(0));
-
-  // sample data
-  size_t memPos=0;
-  int sampleCount=parent->song.sampleLen;
-  if (sampleCount>128) sampleCount=128;
-  for (int i=0; i<sampleCount; i++) {
-    DivSample* s=parent->song.sample[i];
-    int paddedLen=s->lengthVOX;
-    if (memPos>=getSampleMemCapacity(0)) {
-      logW("out of ADPCM memory for sample %d!",i);
-      break;
-    }
-    if (memPos+paddedLen>=getSampleMemCapacity(0)) {
-      memcpy(adpcmMem+memPos,s->dataVOX,getSampleMemCapacity(0)-memPos);
-      logW("out of ADPCM memory for sample %d!",i);
-    } else {
-      memcpy(adpcmMem+memPos,s->dataVOX,paddedLen);
-    }
-    memPos+=paddedLen;
-  }
-  adpcmMemLen=memPos+256;
-}
-
 void DivPlatformMSM6258::setFlags(const DivConfig& flags) {
   switch (flags.getInt("clockSel",0)) {
     case 3:
@@ -402,6 +370,7 @@ void DivPlatformMSM6258::setFlags(const DivConfig& flags) {
       chipClock=4000000;
       break;
   }
+  CHECK_CUSTOM_CLOCK;
   rate=chipClock/256;
   for (int i=0; i<1; i++) {
     oscBuf[i]->rate=rate;
@@ -410,8 +379,6 @@ void DivPlatformMSM6258::setFlags(const DivConfig& flags) {
 
 int DivPlatformMSM6258::init(DivEngine* p, int channels, int sugRate, const DivConfig& flags) {
   parent=p;
-  adpcmMem=new unsigned char[getSampleMemCapacity(0)];
-  adpcmMemLen=0;
   dumpWrites=false;
   skipRegisterWrites=false;
   updateOsc=0;
@@ -431,7 +398,6 @@ void DivPlatformMSM6258::quit() {
     delete oscBuf[i];
   }
   delete msm;
-  delete[] adpcmMem;
 }
 
 DivPlatformMSM6258::~DivPlatformMSM6258() {

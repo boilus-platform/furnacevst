@@ -67,6 +67,7 @@ option(SYSTEM_LIBSNDFILE "Use a system-installed version of libsndfile instead o
 option(SYSTEM_RTMIDI "Use a system-installed version of RtMidi instead of the vendored one" OFF)
 option(SYSTEM_ZLIB "Use a system-installed version of zlib instead of the vendored one" OFF)
 option(SYSTEM_SDL2 "Use a system-installed version of SDL2 instead of the vendored one" ${SYSTEM_SDL2_DEFAULT})
+option(SUPPORT_XP "Build a Windows XP-compatible binary" OFF)
 option(WARNINGS_ARE_ERRORS "Whether warnings in furnace's C++ code should be treated as errors" OFF)
 option(WITH_DEMOS "Install demo songs" ON)
 option(WITH_INSTRUMENTS "Install instruments" ON)
@@ -309,6 +310,7 @@ endif()
 
 set(ENGINE_SOURCES
 src/log.cpp
+src/baseutils.cpp
 src/fileutils.cpp
 src/utfutils.cpp
 
@@ -352,7 +354,7 @@ extern/adpcm/yma_codec.c
 extern/adpcm/ymb_codec.c
 extern/adpcm/ymz_codec.c
 
-extern/Nuked-OPN2/ym3438.c
+extern/opn/ym3438.c
 extern/Nuked-PSG/ympsg.c
 extern/opm/opm.c
 extern/Nuked-OPLL/opll.c
@@ -424,6 +426,9 @@ src/engine/platform/sound/ymfm/ymfm_ssg.cpp
 
 src/engine/platform/sound/lynx/Mikey.cpp
 
+src/engine/platform/sound/pokey/mzpokeysnd.c
+src/engine/platform/sound/pokey/AltASAP.cpp
+
 src/engine/platform/sound/qsound.c
 
 src/engine/platform/sound/swan.cpp
@@ -434,12 +439,18 @@ src/engine/platform/sound/vic20sound.c
 
 src/engine/platform/sound/ymz280b.cpp
 
+src/engine/platform/sound/vsu.cpp
+
+src/engine/platform/sound/t6w28/T6W28_Apu.cpp
+
 src/engine/platform/sound/rf5c68.cpp
 
 src/engine/platform/sound/oki/msm5232.cpp
 src/engine/platform/sound/oki/okim6258.cpp
 
 src/engine/platform/sound/snes/SPC_DSP.cpp
+
+src/engine/platform/sound/ga20/iremga20.cpp
 
 src/engine/platform/oplAInterface.cpp
 src/engine/platform/ym2608Interface.cpp
@@ -502,14 +513,19 @@ src/engine/platform/pcspkr.cpp
 src/engine/platform/segapcm.cpp
 src/engine/platform/qsound.cpp
 src/engine/platform/x1_010.cpp
+src/engine/platform/pokey.cpp
 src/engine/platform/lynx.cpp
 src/engine/platform/su.cpp
 src/engine/platform/swan.cpp
+src/engine/platform/t6w28.cpp
+src/engine/platform/vb.cpp
 src/engine/platform/vera.cpp
 src/engine/platform/zxbeeper.cpp
 src/engine/platform/bubsyswsg.cpp
 src/engine/platform/n163.cpp
 src/engine/platform/pet.cpp
+src/engine/platform/pokemini.cpp
+src/engine/platform/pong.cpp
 src/engine/platform/vic20.cpp
 src/engine/platform/vrc6.cpp
 src/engine/platform/scc.cpp
@@ -517,6 +533,8 @@ src/engine/platform/ymz280b.cpp
 src/engine/platform/namcowsg.cpp
 src/engine/platform/rf5c68.cpp
 src/engine/platform/snes.cpp
+src/engine/platform/k007232.cpp
+src/engine/platform/ga20.cpp
 src/engine/platform/pcmdac.cpp
 src/engine/platform/dummy.cpp
 )
@@ -576,6 +594,7 @@ src/gui/guiConst.cpp
 src/gui/about.cpp
 src/gui/channels.cpp
 src/gui/chanOsc.cpp
+src/gui/clock.cpp
 src/gui/compatFlags.cpp
 src/gui/cursor.cpp
 src/gui/dataList.cpp
@@ -599,6 +618,7 @@ src/gui/piano.cpp
 src/gui/presets.cpp
 src/gui/regView.cpp
 src/gui/sampleEdit.cpp
+src/gui/scaling.cpp
 src/gui/settings.cpp
 src/gui/songInfo.cpp
 src/gui/songNotes.cpp
@@ -615,15 +635,13 @@ src/gui/volMeter.cpp
 src/gui/gui.cpp
 )
 
-if (WIN32 OR APPLE)
+if (WIN32 AND NOT SUPPORT_XP)
   list(APPEND GUI_SOURCES extern/nfd-modified/src/nfd_common.cpp)
-endif()
-
-if (WIN32)
   list(APPEND GUI_SOURCES extern/nfd-modified/src/nfd_win.cpp)
 endif()
 
 if (APPLE)
+  list(APPEND GUI_SOURCES extern/nfd-modified/src/nfd_common.cpp)
   list(APPEND GUI_SOURCES src/gui/macstuff.m)
   list(APPEND GUI_SOURCES extern/nfd-modified/src/nfd_cocoa.mm)
 endif()
@@ -701,11 +719,15 @@ if (WIN32)
   if (NOT MSVC)
     list(APPEND DEPENDENCIES_LIBRARIES -static)
   endif()
-endif()
-
-if (APPLE)
+  # support Windows XP
+  if (SUPPORT_XP)
+    list(APPEND DEPENDENCIES_DEFINES "_WIN32_WINNT=0x0501")
+  endif()
+elseif (APPLE)
   find_library(COCOA Cocoa REQUIRED)
   list(APPEND DEPENDENCIES_LIBRARIES ${COCOA})
+else()
+  list(APPEND DEPENDENCIES_LIBRARIES dl)
 endif()
 
 if (NOT MSVC)

@@ -61,6 +61,11 @@ void DivPlatformRF5C68::acquire(short* bufL, short* bufR, size_t start, size_t l
     buf[8],buf[9],buf[10],buf[11],buf[12],buf[13],buf[14],buf[15]
   };
   size_t pos=start;
+
+  for (int i=0; i<16; i++) {
+    memset(buf[i],0,256*sizeof(short));
+  }
+
   while (len > 0) {
     size_t blockLen=MIN(len,256);
     short* bufPtrs[2]={&bufL[pos],&bufR[pos]};
@@ -82,7 +87,9 @@ void DivPlatformRF5C68::tick(bool sysTick) {
       chan[i].outVol=((chan[i].vol&0xff)*MIN(chan[i].macroVolMul,chan[i].std.vol.val))/chan[i].macroVolMul;
       chWrite(i,0,chan[i].outVol);
     }
-    if (chan[i].std.arp.had) {
+    if (NEW_ARP_STRAT) {
+      chan[i].handleArp();
+    } else if (chan[i].std.arp.had) {
       if (!chan[i].inPorta) {
         chan[i].baseFreq=NOTE_FREQUENCY(parent->calcArp(chan[i].note,chan[i].std.arp.val));
       }
@@ -127,7 +134,7 @@ void DivPlatformRF5C68::tick(bool sysTick) {
       unsigned char keyoff=keyon|(1<<i);
       DivSample* s=parent->getSample(chan[i].sample);
       double off=(s->centerRate>=1)?((double)s->centerRate/8363.0):1.0;
-      chan[i].freq=(int)(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE));
+      chan[i].freq=(int)(off*parent->calcFreq(chan[i].baseFreq,chan[i].pitch,chan[i].fixedArp?chan[i].baseNoteOverride:chan[i].arpOff,chan[i].fixedArp,false,2,chan[i].pitch2,chipClock,CHIP_FREQBASE));
       if (chan[i].freq>65535) chan[i].freq=65535;
       if (chan[i].keyOn) {
         unsigned int start=0;
@@ -173,7 +180,7 @@ int DivPlatformRF5C68::dispatch(DivCommand c) {
     case DIV_CMD_NOTE_ON: {
       DivInstrument* ins=parent->getIns(chan[c.chan].ins,DIV_INS_AMIGA);
       chan[c.chan].macroVolMul=ins->type==DIV_INS_AMIGA?64:255;
-      chan[c.chan].sample=ins->amiga.getSample(c.value);
+      if (c.value!=DIV_NOTE_NULL) chan[c.chan].sample=ins->amiga.getSample(c.value);
       if (c.value!=DIV_NOTE_NULL) {
         chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value);
       }
@@ -254,7 +261,7 @@ int DivPlatformRF5C68::dispatch(DivCommand c) {
       break;
     }
     case DIV_CMD_LEGATO: {
-      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+((chan[c.chan].std.arp.will && !chan[c.chan].std.arp.mode)?(chan[c.chan].std.arp.val-12):(0)));
+      chan[c.chan].baseFreq=NOTE_FREQUENCY(c.value+((HACKY_LEGATO_MESS)?(chan[c.chan].std.arp.val-12):(0)));
       chan[c.chan].freqChanged=true;
       chan[c.chan].note=c.value;
       break;
@@ -263,7 +270,7 @@ int DivPlatformRF5C68::dispatch(DivCommand c) {
       if (chan[c.chan].active && c.value2) {
         if (parent->song.resetMacroOnPorta) chan[c.chan].macroInit(parent->getIns(chan[c.chan].ins,DIV_INS_AMIGA));
       }
-      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
+      if (!chan[c.chan].inPorta && c.value && !parent->song.brokenPortaArp && chan[c.chan].std.arp.will && !NEW_ARP_STRAT) chan[c.chan].baseFreq=NOTE_FREQUENCY(chan[c.chan].note);
       chan[c.chan].inPorta=c.value;
       break;
     case DIV_CMD_SAMPLE_POS:
@@ -272,6 +279,12 @@ int DivPlatformRF5C68::dispatch(DivCommand c) {
       break;
     case DIV_CMD_GET_VOLMAX:
       return 255;
+      break;
+    case DIV_CMD_MACRO_OFF:
+      chan[c.chan].std.mask(c.value,true);
+      break;
+    case DIV_CMD_MACRO_ON:
+      chan[c.chan].std.mask(c.value,false);
       break;
     case DIV_ALWAYS_SET_VOLUME:
       return 1;
@@ -348,6 +361,7 @@ void DivPlatformRF5C68::setFlags(const DivConfig& flags) {
     case 2: chipClock=12500000; break;
     default: chipClock=8000000; break;
   }
+  CHECK_CUSTOM_CLOCK;
   chipType=flags.getInt("chipType",0);
   rate=chipClock/384;
   for (int i=0; i<8; i++) {
@@ -385,13 +399,25 @@ size_t DivPlatformRF5C68::getSampleMemUsage(int index) {
   return index == 0 ? sampleMemLen : 0;
 }
 
-void DivPlatformRF5C68::renderSamples() {
+bool DivPlatformRF5C68::isSampleLoaded(int index, int sample) {
+  if (index!=0) return false;
+  if (sample<0 || sample>255) return false;
+  return sampleLoaded[sample];
+}
+
+void DivPlatformRF5C68::renderSamples(int sysID) {
   memset(sampleMem,0,getSampleMemCapacity());
   memset(sampleOffRFC,0,256*sizeof(unsigned int));
+  memset(sampleLoaded,0,256*sizeof(bool));
 
   size_t memPos=0;
   for (int i=0; i<parent->song.sampleLen; i++) {
     DivSample* s=parent->song.sample[i];
+    if (!s->renderOn[0][sysID]) {
+      sampleOffRFC[i]=0;
+      continue;
+    }
+
     int length=s->getLoopEndPosition(DIV_SAMPLE_DEPTH_8BIT);
     int actualLength=MIN((int)(getSampleMemCapacity()-memPos)-31,length);
     if (actualLength>0) {
@@ -412,6 +438,7 @@ void DivPlatformRF5C68::renderSamples() {
     }
     // align memPos to 256-byte boundary
     memPos=(memPos+0xff)&~0xff;
+    sampleLoaded[i]=true;
   }
   sampleMemLen=memPos;
 }
